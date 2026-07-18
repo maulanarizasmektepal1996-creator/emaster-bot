@@ -9,6 +9,7 @@ Bot admin-terkelola untuk mencari Kamus Aktivitas Disbudpar, menghitung WPT, mem
 - Akun, cookie sesi, dashboard WPT, dan riwayat setiap pegawai terpisah.
 - Admin dapat melihat status dan menonaktifkan pegawai.
 - Login NIP/password dan OTP Google Authenticator saat sesi berakhir.
+- Setiap pegawai yang menjalankan `/login` selalu memulai sesi baru dan wajib memasukkan OTP miliknya.
 - Cookie sesi disimpan terenkripsi.
 - Pencarian Kamus Aktivitas langsung dari e‑Master.
 - Mengambil semua Kegiatan Tugas Jabatan secara otomatis dan menampilkannya sebagai pilihan.

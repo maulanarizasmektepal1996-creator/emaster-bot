@@ -70,7 +70,7 @@ async def show_menu(message, is_admin=False):
         [InlineKeyboardButton("➕ Tambah Aktivitas", callback_data="menu:add")],
         [InlineKeyboardButton("📊 Dashboard WPT", callback_data="menu:progress"),
          InlineKeyboardButton("🕘 Riwayat", callback_data="menu:history")],
-        [InlineKeyboardButton("🔐 Login / Cek Sesi", callback_data="menu:login")],
+        [InlineKeyboardButton("🔐 Login e‑Master (OTP)", callback_data="menu:login")],
     ]
     if is_admin:
         rows.append([InlineKeyboardButton("👥 Kelola Pegawai", callback_data="menu:users")])
@@ -87,20 +87,17 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     if update.callback_query:
         await update.callback_query.answer()
-    status = await message.reply_text("⏳ Memeriksa sesi e‑Master…")
+    status = await message.reply_text("⏳ Membuat sesi login e‑Master baru…")
     try:
         client = get_client(update.effective_user.id)
-        if client.is_authenticated():
-            await status.edit_text("✅ *SESI AKTIF*\n\nBot siap digunakan.", parse_mode="Markdown")
-            return ConversationHandler.END
-        # Cookie sesi lama dapat mengganggu login MFA. Bersihkan otomatis;
-        # ENCRYPTION_KEY tidak perlu dan tidak boleh diganti-ganti.
+        # Setiap perintah /login wajib membuat sesi baru dan meminta OTP.
+        # Sesi milik pegawai lain tidak terpengaruh.
         client.reset_session()
         needs_otp = client.begin_login()
         if needs_otp:
             await status.edit_text("🔐 *VERIFIKASI OTP*\n\nMasukkan 6 digit kode Google Authenticator.\nPesan OTP akan otomatis dihapus.", parse_mode="Markdown")
             return OTP
-        await status.edit_text("✅ Login e‑Master berhasil.")
+        await status.edit_text("✅ Login e‑Master berhasil tanpa permintaan OTP dari server.")
     except EMasterError as exc:
         await status.edit_text(f"❌ {exc}")
     return ConversationHandler.END
