@@ -245,7 +245,7 @@ async def pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     idx = int(query.data.split(":")[1])
     item: KamusItem = context.user_data["items"][idx]
     context.user_data["item"] = item
-    await query.edit_message_text(f"✅ *AKTIVITAS DIPILIH*\n\n{item.code} — {item.activity}\n📦 Satuan: {item.unit}\n⏱ WPT: {item.wpt} menit", parse_mode="Markdown")
+    await query.edit_message_text(f"✅ AKTIVITAS DIPILIH\n\n{item.code} — {item.activity}\n📦 Satuan: {item.unit}\n⏱ WPT: {item.wpt} menit")
     await query.message.reply_text("🔢 Masukkan volume (angka bulat):")
     return VOLUME
 
@@ -277,15 +277,17 @@ async def object_work(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["object"] = text
     item = context.user_data["item"]
     vol = context.user_data["volume"]
-    summary = (f"📋 *KONFIRMASI AKTIVITAS*\n━━━━━━━━━━━━━━━━━━━━\n"
-               f"📅 Tanggal: *{context.user_data['date']}*\n\n"
+    summary = (f"📋 KONFIRMASI AKTIVITAS\n━━━━━━━━━━━━━━━━━━━━\n"
+               f"📅 Tanggal: {context.user_data['date']}\n\n"
                f"🎯 Tugas Jabatan:\n{context.user_data['target'].name}\n\n"
                f"📌 Aktivitas:\n{item.code} — {item.activity}\n\n"
-               f"📦 Satuan: {item.unit}\n⏱ WPT: {item.wpt} × {vol} = *{item.wpt*vol} menit*\n\n"
+               f"📦 Satuan: {item.unit}\n⏱ WPT: {item.wpt} × {vol} = {item.wpt*vol} menit\n\n"
                f"📝 Objek Kerja:\n{text}")
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Kirim ke e‑Master", callback_data="send"),
                                 InlineKeyboardButton("❌ Batal", callback_data="cancel")]])
-    await update.message.reply_text(summary, parse_mode="Markdown", reply_markup=kb)
+    # Teks dari e-Master dapat berisi underscore seperti eastjavatrip_id.
+    # Jangan gunakan Markdown agar seluruh karakter selalu aman ditampilkan.
+    await update.message.reply_text(summary, reply_markup=kb)
     return CONFIRM
 
 
@@ -307,8 +309,8 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("➕ Tambah Lagi", callback_data="menu:add"),
                                     InlineKeyboardButton("📊 Dashboard", callback_data="menu:progress")],
                                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu:home")]])
-        await query.edit_message_text(f"✅ *BERHASIL TERSIMPAN*\n\n{item.activity}\n⏱ {item.wpt * context.user_data['volume']} menit\n📅 {date}",
-                                      parse_mode="Markdown", reply_markup=kb)
+        await query.edit_message_text(f"✅ BERHASIL TERSIMPAN\n\n{item.activity}\n⏱ {item.wpt * context.user_data['volume']} menit\n📅 {date}",
+                                      reply_markup=kb)
     except AuthenticationRequired:
         await query.edit_message_text("🔐 Sesi habis. Jalankan /login, lalu ulangi pengiriman.")
     except (EMasterError, KeyError) as exc:
@@ -359,10 +361,10 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not rows:
         await update.effective_message.reply_text("🕘 Belum ada aktivitas yang dikirim melalui bot.")
         return
-    lines = ["🕘 *RIWAYAT TERAKHIR*", "━━━━━━━━━━━━━━━━━━━━"]
+    lines = ["🕘 RIWAYAT TERAKHIR", "━━━━━━━━━━━━━━━━━━━━"]
     for date, activity, wpt, vol, obj in rows:
-        lines.append(f"\n📅 *{date}* · {wpt*vol} menit\n{activity}\n_{obj}_")
-    await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown",
+        lines.append(f"\n📅 {date} · {wpt*vol} menit\n{activity}\n{obj}")
+    await update.effective_message.reply_text("\n".join(lines),
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➕ Tambah Aktivitas", callback_data="menu:add"),
                                             InlineKeyboardButton("🏠 Menu", callback_data="menu:home")]]))
 
@@ -424,8 +426,8 @@ async def employee_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = context.user_data["new_telegram_id"]
     storage.invite_user(telegram_id, context.user_data["new_nip"], name)
     await update.message.reply_text(
-        f"✅ *UNDANGAN DIBUAT*\n\nNama: {name}\nTelegram ID: `{telegram_id}`\n\n"
-        "Minta pegawai membuka bot, tekan /start, lalu /aktifkan.", parse_mode="Markdown")
+        f"✅ UNDANGAN DIBUAT\n\nNama: {name}\nTelegram ID: {telegram_id}\n\n"
+        "Minta pegawai membuka bot, tekan /start, lalu /aktifkan.")
     try:
         await context.bot.send_message(telegram_id,
             f"👋 Halo {name}, Anda telah didaftarkan ke Bot Aktivitas e‑Master.\nJalankan /aktifkan untuk memasukkan password pribadi.")
@@ -476,14 +478,14 @@ async def users_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("⛔ Khusus admin.")
         return
     rows = storage.list_users()
-    text = ["👥 *KELOLA PEGAWAI*", "━━━━━━━━━━━━━━━━━━━━"]
+    text = ["👥 KELOLA PEGAWAI", "━━━━━━━━━━━━━━━━━━━━"]
     buttons = [[InlineKeyboardButton("➕ Tambah Pegawai", callback_data="admin:add")]]
     for tid, nip, name, status, is_admin in rows:
         icon = "👑" if is_admin else ("✅" if status == "active" else "⏳" if status == "invited" else "⛔")
-        text.append(f"\n{icon} *{name or 'Tanpa nama'}*\nID: `{tid}` · Status: {status}")
+        text.append(f"\n{icon} {name or 'Tanpa nama'}\nID: {tid} · Status: {status}")
         if not is_admin and status != "disabled":
             buttons.append([InlineKeyboardButton(f"⛔ Nonaktifkan {name or tid}", callback_data=f"admin:disable:{tid}")])
-    await update.effective_message.reply_text("\n".join(text), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+    await update.effective_message.reply_text("\n".join(text), reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def disable_employee(update: Update, context: ContextTypes.DEFAULT_TYPE):
