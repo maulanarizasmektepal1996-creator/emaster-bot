@@ -48,6 +48,19 @@ class MonthProgress:
     minutes: int
 
 
+@dataclass(frozen=True)
+class RemoteActivity:
+    realization_id: str
+    date: str
+    activity: str
+    object_work: str
+    unit: str
+    wpt: int
+    volume: int
+    total: int
+    delete_url: str
+
+
 def _find_field(form, candidates: Iterable[str], input_type: str | None = None) -> str | None:
     lowered = tuple(x.lower() for x in candidates)
     for tag in form.select("input, select, textarea"):
@@ -241,6 +254,39 @@ class EMasterClient:
             raise EMasterError("Total WPT terbaru tidak ditemukan pada halaman e-Master.")
         clean = lambda value: int(re.sub(r"\D", "", value or "0"))
         return MonthProgress(clean(activity_match.group(1) if activity_match else "0"), clean(wpt_match.group(1)))
+
+    def list_recent_activities(self, month: str, limit: int = 10) -> list[RemoteActivity]:
+        if not self.is_authenticated():
+            raise AuthenticationRequired("Sesi e-Master habis.")
+        activities: list[RemoteActivity] = []
+        for target in self.list_work_targets(month):
+            detail_url = target.add_url.replace("act=tambahaktifitas", "act=realisasi")
+            r = self.http.get(detail_url, timeout=30)
+            soup = BeautifulSoup(r.text, "html.parser")
+            for tr in soup.select("tbody tr"):
+                cells = [x.get_text(" ", strip=True) for x in tr.select("td")]
+                delete = tr.select_one('a[title="Delete"], a[title="delete"]')
+                if len(cells) < 10 or not cells[0].isdigit() or not delete:
+                    continue
+                delete_url = urljoin(r.url, delete.get("href", ""))
+                rid = re.search(r"id_realisasi=(\d+)", delete_url)
+                try:
+                    activities.append(RemoteActivity(
+                        rid.group(1) if rid else "", cells[2].replace("-", "/"), cells[3], cells[4],
+                        cells[5], int(cells[6]), int(cells[7]), int(cells[8]), delete_url))
+                except ValueError:
+                    continue
+        activities.sort(key=lambda x: int(x.realization_id or 0), reverse=True)
+        return activities[:limit]
+
+    def delete_activity(self, delete_url: str) -> None:
+        if not self.is_authenticated():
+            raise AuthenticationRequired("Sesi e-Master habis.")
+        if not delete_url.startswith(BASE_URL) or "act=delete" not in delete_url or "id_realisasi=" not in delete_url:
+            raise EMasterError("Alamat penghapusan tidak valid.")
+        r = self.http.get(delete_url, timeout=30, allow_redirects=True)
+        if not r.ok or "proses hapus" not in r.text.lower() and "info=delete" not in r.url.lower():
+            raise EMasterError("e-Master tidak mengonfirmasi penghapusan.")
 
     def submit_activity(self, *, month: str, target: WorkTarget, date: str,
                         item: KamusItem, volume: int, object_work: str) -> None:

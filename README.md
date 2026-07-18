@@ -13,6 +13,10 @@ Bot pribadi untuk mencari Kamus Aktivitas Disbudpar, menghitung WPT, meminta kon
 - Validasi H+7 dan maksimum 660 menit per aktivitas yang dikirim.
 - Konfirmasi sebelum data dikirim.
 - Progres mengambil total WPT terbaru langsung dari e‑Master, termasuk aktivitas yang diinput melalui situs.
+- Dashboard progres, estimasi hari kerja, dan reminder harian otomatis.
+- Verifikasi WPT sebelum dan sesudah setiap pengiriman.
+- Riwayat aktivitas langsung dari e‑Master dengan penghapusan dua tahap.
+- Aktivitas dan objek kerja favorit.
 
 ## Catatan penting
 
@@ -43,6 +47,22 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 6. Buka Telegram: `/start`, kemudian `/login`.
 7. Saat diminta, kirim OTP 6 digit. Pesan OTP akan berusaha dihapus segera setelah diproses.
 8. Jalankan `/tambah` untuk uji satu aktivitas.
+
+Reminder default dikirim pukul 15.30 WIB. Ubah `REMINDER_HOUR` dan
+`REMINDER_MINUTE` jika diperlukan.
+
+## Perintah
+
+- `/start` — menu utama.
+- `/login` — cek atau perbarui sesi dan OTP.
+- `/tambah` — tambah aktivitas.
+- `/dashboard` atau `/progres` — WPT terbaru dari e‑Master.
+- `/riwayat` — aktivitas terbaru dan tombol hapus.
+- `/favorit` — daftar template favorit.
+- `/batal` — hentikan proses pengisian.
+
+Penghapusan selalu meminta konfirmasi kedua. Data yang sudah dihapus dari e‑Master
+tidak dapat dipulihkan oleh bot.
 
 ## Menjalankan lokal
 
