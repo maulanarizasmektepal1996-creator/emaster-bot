@@ -200,11 +200,19 @@ async def load_targets(update: Update, context: ContextTypes.DEFAULT_TYPE, date:
 @private
 async def pick_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    idx = int(query.data.split(":")[1])
-    target: WorkTarget = context.user_data["targets"][idx]
+    await query.answer("Tugas jabatan dipilih ✅")
+    try:
+        idx = int(query.data.split(":")[1])
+        target: WorkTarget = context.user_data["targets"][idx]
+    except (KeyError, IndexError, ValueError):
+        await query.message.reply_text("⚠️ Daftar tugas sudah kedaluwarsa. Tekan /tambah untuk memulai kembali.")
+        return ConversationHandler.END
     context.user_data["target"] = target
-    await query.edit_message_text(f"✅ *TUGAS JABATAN DIPILIH*\n{target.name}", parse_mode="Markdown")
+    try:
+        await query.edit_message_text(f"✅ TUGAS JABATAN DIPILIH\n\n{target.name}")
+    except Exception:
+        logging.exception("Tidak dapat mengedit pesan pilihan tugas")
+        await query.message.reply_text(f"✅ TUGAS JABATAN DIPILIH\n\n{target.name}")
     await query.message.reply_text("🔎 *CARI AKTIVITAS*\nKetik kata kunci, misalnya: `video`, `rapat`, atau `dokumen`.", parse_mode="Markdown")
     return SEARCH
 
@@ -488,6 +496,16 @@ async def disable_employee(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text("✅ Pegawai dinonaktifkan. Data pegawai lain tidak berubah.")
 
 
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logging.exception("Unhandled Telegram bot error", exc_info=context.error)
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(
+                "⚠️ Terjadi gangguan saat memproses tombol. Silakan tekan /tambah dan coba kembali.")
+        except Exception:
+            pass
+
+
 @private
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -534,6 +552,7 @@ def main():
     app.add_handler(CallbackQueryHandler(menu_home, pattern=r"^menu:home$"))
     app.add_handler(CallbackQueryHandler(users_menu, pattern=r"^menu:users$"))
     app.add_handler(CallbackQueryHandler(disable_employee, pattern=r"^admin:disable:\d+$"))
+    app.add_error_handler(on_error)
     app.run_polling(drop_pending_updates=True)
 
 
