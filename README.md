@@ -33,6 +33,10 @@ Jalankan sekali di komputer:
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
+`ENCRYPTION_KEY` dibuat satu kali dan jangan diganti setiap deploy. Jika sesi
+e‑Master kedaluwarsa, bot akan membersihkan cookie lama secara otomatis saat
+`/login` dijalankan.
+
 ## Deploy Railway
 
 1. Buat repository GitHub baru dan unggah seluruh isi folder ini.

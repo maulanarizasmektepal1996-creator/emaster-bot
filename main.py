@@ -50,6 +50,9 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if client.is_authenticated():
             await update.message.reply_text("✅ Sesi e‑Master masih aktif.")
             return ConversationHandler.END
+        # Cookie sesi lama dapat mengganggu login MFA. Bersihkan otomatis;
+        # ENCRYPTION_KEY tidak perlu dan tidak boleh diganti-ganti.
+        client.reset_session()
         needs_otp = client.begin_login()
         if needs_otp:
             await update.message.reply_text("🔐 Masukkan OTP Google Authenticator 6 digit. Pesan akan dihapus setelah diproses.")

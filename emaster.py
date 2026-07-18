@@ -86,6 +86,14 @@ class EMasterClient:
         payload = json.dumps(requests.utils.dict_from_cookiejar(self.http.cookies)).encode()
         self.session_path.write_bytes(self.fernet.encrypt(payload))
 
+    def reset_session(self) -> None:
+        """Buang cookie kedaluwarsa tanpa mengganti ENCRYPTION_KEY."""
+        self.http.cookies.clear()
+        try:
+            self.session_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
     @staticmethod
     def _form_payload(form) -> dict[str, str]:
         payload: dict[str, str] = {}
