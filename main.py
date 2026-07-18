@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
-from datetime import datetime, time
-from zoneinfo import ZoneInfo
+from datetime import datetime
 
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -38,30 +36,27 @@ def private(fn):
 
 @private
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Tambah Aktivitas", callback_data="menu:add"),
-         InlineKeyboardButton("📊 Dashboard WPT", callback_data="menu:progress")],
-        [InlineKeyboardButton("🕘 Riwayat e‑Master", callback_data="menu:history"),
-         InlineKeyboardButton("⭐ Favorit", callback_data="menu:favorites")],
-        [InlineKeyboardButton("🔐 Login / Cek Sesi", callback_data="menu:login")]
-    ])
-    await update.message.reply_text("🤖 Bot Aktivitas Harian e‑Master\nPilih menu:", reply_markup=kb)
+    await update.message.reply_text(
+        "🤖 Bot Aktivitas e‑Master\n\n"
+        "/login — hubungkan sesi e‑Master\n"
+        "/tambah — tambah dan kirim aktivitas\n"
+        "/progres — progres bulan berjalan\n"
+        "/batal — batalkan pengisian")
 
 
 @private
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status = await update.message.reply_text("⏳ Menghubungkan ke e‑Master…")
     try:
-        needs_otp = await asyncio.to_thread(client.begin_login)
+        if client.is_authenticated():
+            await update.message.reply_text("✅ Sesi e‑Master masih aktif.")
+            return ConversationHandler.END
+        needs_otp = client.begin_login()
         if needs_otp:
-            await status.edit_text("🔐 Masukkan OTP Google Authenticator 6 digit. Pesan akan dihapus setelah diproses.")
+            await update.message.reply_text("🔐 Masukkan OTP Google Authenticator 6 digit. Pesan akan dihapus setelah diproses.")
             return OTP
-        await status.edit_text("✅ Sesi e‑Master masih aktif dan siap digunakan.")
+        await update.message.reply_text("✅ Login e‑Master berhasil.")
     except EMasterError as exc:
-        await status.edit_text(f"❌ {exc}")
-    except Exception:
-        logging.exception("Koneksi login e-Master gagal")
-        await status.edit_text("❌ e‑Master terlalu lama merespons. Coba /login kembali beberapa saat lagi.")
+        await update.message.reply_text(f"❌ {exc}")
     return ConversationHandler.END
 
 
@@ -73,7 +68,7 @@ async def otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
     try:
-        await asyncio.to_thread(client.submit_otp, code)
+        client.submit_otp(code)
         await context.bot.send_message(OWNER, "✅ OTP diterima. Sesi e‑Master aktif.")
     except EMasterError as exc:
         await context.bot.send_message(OWNER, f"❌ {exc}")
@@ -127,11 +122,6 @@ async def pick_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target: WorkTarget = context.user_data["targets"][idx]
     context.user_data["target"] = target
     await query.edit_message_text(f"✅ Tugas jabatan:\n{target.name}")
-    if context.user_data.get("favorite_mode") and context.user_data.get("item"):
-        item = context.user_data["item"]
-        await query.message.reply_text(
-            f"⭐ Favorit: {item.activity}\nWPT: {item.wpt} menit\nMasukkan volume (angka bulat):")
-        return VOLUME
     await query.message.reply_text("🔎 Ketik kata kunci kamus aktivitas, misalnya: video, rapat, dokumen")
     return SEARCH
 
@@ -215,21 +205,11 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     item = context.user_data["item"]
     date = context.user_data["date"]
     try:
-        before = client.get_month_progress(date[3:5])
         client.submit_activity(
             month=date[3:5], target=context.user_data["target"], date=date, item=item,
             volume=context.user_data["volume"], object_work=context.user_data["object"])
         storage.add_sent(date, item, context.user_data["volume"], context.user_data["object"])
-        after = client.get_month_progress(date[3:5])
-        expected = item.wpt * context.user_data["volume"]
-        verified = after.minutes - before.minutes == expected
-        mark = "✅ TERVERIFIKASI" if verified else "⚠️ PERLU DIPERIKSA"
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⭐ Simpan sebagai Favorit", callback_data=f"favlast:{storage.recent(1)[0][0]}")],
-                                   [InlineKeyboardButton("📊 Lihat Dashboard", callback_data="menu:progress")]])
-        await query.edit_message_text(
-            f"{mark}\nAktivitas tersimpan di e‑Master.\nWPT sebelumnya: {before.minutes}\n"
-            f"WPT sekarang: {after.minutes}\nPenambahan: {after.minutes-before.minutes} menit",
-            reply_markup=kb)
+        await query.edit_message_text("✅ Aktivitas berhasil dikirim ke e‑Master.")
     except AuthenticationRequired:
         await query.edit_message_text("🔐 Sesi habis. Jalankan /login, lalu ulangi pengiriman.")
     except (EMasterError, KeyError) as exc:
@@ -245,143 +225,14 @@ async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
         count, minutes = current.activities, current.minutes
         source = "Data terbaru e‑Master"
     except AuthenticationRequired:
-        await update.effective_message.reply_text("🔐 Sesi e‑Master habis. Jalankan /login, lalu /progres kembali.")
+        await update.message.reply_text("🔐 Sesi e‑Master habis. Jalankan /login, lalu /progres kembali.")
         return
     except EMasterError as exc:
-        await update.effective_message.reply_text(f"❌ Tidak dapat memperbarui progres: {exc}")
+        await update.message.reply_text(f"❌ Tidak dapat memperbarui progres: {exc}")
         return
     target = 6750
     pct = min(100, minutes / target * 100)
-    bar = "█" * round(pct / 10) + "░" * (10 - round(pct / 10))
-    days_needed = (max(0, target-minutes) + 329) // 330
-    await update.effective_message.reply_text(
-        f"📊 DASHBOARD WPT — {now:%B %Y}\n\n{bar} {pct:.1f}%\n"
-        f"Aktivitas: {count}\nWPT: {minutes}/{target} menit\n"
-        f"Kekurangan: {max(0,target-minutes)} menit\nEstimasi: {days_needed} hari × 330 menit\n\n🔄 {source}")
-
-
-@private
-async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        rows = client.list_recent_activities(datetime.now().strftime("%m"), 8)
-    except AuthenticationRequired:
-        await update.effective_message.reply_text("🔐 Sesi habis. Jalankan /login.")
-        return
-    except EMasterError as exc:
-        await update.effective_message.reply_text(f"❌ {exc}")
-        return
-    if not rows:
-        await update.effective_message.reply_text("Belum ada aktivitas yang ditemukan.")
-        return
-    context.user_data["remote_history"] = {x.realization_id: x for x in rows}
-    for x in rows:
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🗑 Hapus", callback_data=f"askdel:{x.realization_id}")]])
-        await update.effective_message.reply_text(
-            f"📅 {x.date}\n{x.activity}\n{x.object_work}\n{x.wpt} × {x.volume} = {x.total} menit",
-            reply_markup=kb)
-
-
-@private
-async def ask_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    rid = q.data.split(":")[1]
-    row = context.user_data.get("remote_history", {}).get(rid)
-    if not row:
-        await q.edit_message_text("Riwayat kedaluwarsa. Buka /riwayat kembali.")
-        return
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Ya, hapus permanen", callback_data=f"dodel:{rid}"),
-                                InlineKeyboardButton("Batal", callback_data="dodel:cancel")]])
-    await q.edit_message_reply_markup(kb)
-
-
-@private
-async def do_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    rid = q.data.split(":")[1]
-    if rid == "cancel":
-        await q.edit_message_text("Penghapusan dibatalkan.")
-        return
-    row = context.user_data.get("remote_history", {}).get(rid)
-    if not row:
-        await q.edit_message_text("Riwayat kedaluwarsa. Tidak ada data yang dihapus.")
-        return
-    try:
-        client.delete_activity(row.delete_url)
-        await q.edit_message_text("✅ Aktivitas dihapus dari e‑Master. Gunakan /progres untuk memperbarui WPT.")
-    except EMasterError as exc:
-        await q.edit_message_text(f"❌ Gagal menghapus: {exc}")
-
-
-@private
-async def favorite_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    local_id = int(q.data.split(":")[1])
-    row = next((x for x in storage.recent(30) if x[0] == local_id), None)
-    if not row:
-        await q.answer("Data lokal tidak ditemukan", show_alert=True); return
-    storage.add_favorite(row[2], row[3], row[4], row[5], row[7])
-    await q.edit_message_reply_markup(InlineKeyboardMarkup([[InlineKeyboardButton("⭐ Tersimpan di Favorit", callback_data="menu:favorites")]]))
-
-
-@private
-async def favorites(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    rows = storage.favorites()
-    if not rows:
-        await update.effective_message.reply_text("⭐ Belum ada favorit. Setelah mengirim aktivitas, tekan ‘Simpan sebagai Favorit’.")
-        return
-    for row in rows:
-        await update.effective_message.reply_text(
-            f"⭐ {row[2]}\nWPT: {row[4]} menit\nObjek: {row[5]}",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("▶️ Gunakan", callback_data=f"usefav:{row[0]}")],
-                [InlineKeyboardButton("🗑 Hapus Favorit", callback_data=f"delfav:{row[0]}")]
-            ]))
-
-
-@private
-async def use_favorite(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    favorite_id = int(q.data.split(":")[1])
-    row = next((x for x in storage.favorites() if x[0] == favorite_id), None)
-    if not row:
-        await q.edit_message_text("Favorit tidak ditemukan.")
-        return ConversationHandler.END
-    context.user_data.clear()
-    context.user_data["favorite_mode"] = True
-    context.user_data["item"] = KamusItem(row[1], row[2], row[3], row[4], "Favorit", row[5])
-    await q.message.reply_text("📅 Masukkan tanggal aktivitas (DD/MM/YYYY):")
-    return DATE
-
-
-@private
-async def delete_favorite(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    storage.delete_favorite(int(q.data.split(":")[1]))
-    await q.edit_message_text("Favorit dihapus.")
-
-
-async def daily_reminder(context: ContextTypes.DEFAULT_TYPE):
-    try:
-        p = client.get_month_progress(datetime.now().strftime("%m"))
-        remaining = max(0, 6750-p.minutes)
-        text = (f"⏰ Pengingat Aktivitas Harian\nWPT e‑Master: {p.minutes}/6750 menit\n"
-                f"Kekurangan: {remaining} menit\n" + ("Target bulanan sudah terpenuhi ✅" if not remaining else "Jangan lupa isi aktivitas hari ini."))
-    except Exception:
-        text = "⏰ Jangan lupa memeriksa dan mengisi aktivitas harian e‑Master."
-    await context.bot.send_message(OWNER, text)
-
-
-@private
-async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    action = q.data.split(":")[1]
-    if action == "progress": return await progress(update, context)
-    if action == "history": return await history(update, context)
-    if action == "favorites": return await favorites(update, context)
-    if action == "add":
-        await q.message.reply_text("Gunakan /tambah untuk mulai mengisi aktivitas.")
-    elif action == "login":
-        await q.message.reply_text("Gunakan /login untuk mengecek atau memperbarui sesi.")
+    await update.message.reply_text(f"📊 Progres {now:%B %Y}\n{source}\nJumlah aktivitas: {count}\nWPT: {minutes}/{target} menit ({pct:.1f}%)\nKekurangan: {max(0,target-minutes)} menit")
 
 
 @private
@@ -396,8 +247,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(ConversationHandler(entry_points=[CommandHandler("login", login)],
         states={OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, otp)]}, fallbacks=[CommandHandler("batal", cancel)]))
-    app.add_handler(ConversationHandler(entry_points=[CommandHandler("tambah", add),
-                                                    CallbackQueryHandler(use_favorite, pattern=r"^usefav:\d+$")], states={
+    app.add_handler(ConversationHandler(entry_points=[CommandHandler("tambah", add)], states={
         DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_date)],
         TARGET: [CallbackQueryHandler(pick_target, pattern=r"^target:\d+$")],
         SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, search)],
@@ -407,19 +257,7 @@ def main():
         CONFIRM: [CallbackQueryHandler(confirm, pattern=r"^(send|cancel)$")],
     }, fallbacks=[CommandHandler("batal", cancel)]))
     app.add_handler(CommandHandler("progres", progress))
-    app.add_handler(CommandHandler("dashboard", progress))
-    app.add_handler(CommandHandler("riwayat", history))
-    app.add_handler(CommandHandler("favorit", favorites))
     app.add_handler(CommandHandler("batal", cancel))
-    app.add_handler(CallbackQueryHandler(menu_router, pattern=r"^menu:"))
-    app.add_handler(CallbackQueryHandler(favorite_last, pattern=r"^favlast:\d+$"))
-    app.add_handler(CallbackQueryHandler(ask_delete, pattern=r"^askdel:\d+$"))
-    app.add_handler(CallbackQueryHandler(do_delete, pattern=r"^dodel:"))
-    app.add_handler(CallbackQueryHandler(delete_favorite, pattern=r"^delfav:\d+$"))
-    if app.job_queue:
-        tz = ZoneInfo(os.getenv("TZ", "Asia/Jakarta"))
-        app.job_queue.run_daily(daily_reminder, time(hour=int(os.getenv("REMINDER_HOUR", "15")),
-                                                      minute=int(os.getenv("REMINDER_MINUTE", "30")), tzinfo=tz))
     app.run_polling(drop_pending_updates=True)
 
 

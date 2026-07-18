@@ -48,19 +48,6 @@ class MonthProgress:
     minutes: int
 
 
-@dataclass(frozen=True)
-class RemoteActivity:
-    realization_id: str
-    date: str
-    activity: str
-    object_work: str
-    unit: str
-    wpt: int
-    volume: int
-    total: int
-    delete_url: str
-
-
 def _find_field(form, candidates: Iterable[str], input_type: str | None = None) -> str | None:
     lowered = tuple(x.lower() for x in candidates)
     for tag in form.select("input, select, textarea"):
@@ -82,9 +69,6 @@ class EMasterClient:
         self.fernet = Fernet(encryption_key.encode())
         self.session_path = Path(session_path)
         self.http = requests.Session()
-        self._mfa_action: str | None = None
-        self._mfa_payload: dict[str, str] | None = None
-        self._mfa_referer: str | None = None
         self.http.headers.update({"User-Agent": "Mozilla/5.0 EMasterPersonalTelegramBot/1.0"})
         self._restore()
 
@@ -116,33 +100,11 @@ class EMasterClient:
     def is_authenticated(self) -> bool:
         r = self.http.get(urljoin(BASE_URL, "essmedia.php?module=aktifitas_bulan"), timeout=30)
         text = r.text.lower()
-        if not r.ok or "login area" in text:
-            return False
-        soup = BeautifulSoup(r.text, "html.parser")
-        login_form = soup.select_one('form input[name="username"]') and soup.select_one('form input[name="password"]')
-        if login_form:
-            return False
-        # Sesudah MFA e-Master dapat mengembalikan home/dashboard terlebih dahulu.
-        # Menu logout hanya tersedia pada halaman ESS yang sudah terautentikasi.
-        authenticated_markers = (
-            "aktivitas harian tahun",
-            "logout.php",
-            "module=home",
-            "dashboard - 2026",
-        )
-        return any(marker in text for marker in authenticated_markers)
+        return r.ok and "aktivitas harian tahun" in text and "login area" not in text
 
     def begin_login(self) -> bool:
         """Login NIP/password. Returns True when OTP is required."""
-        # Satu request ini sekaligus mengecek cookie lama. Jika sesi habis,
-        # e-Master mengarahkan respons ke halaman login sehingga tidak perlu GET kedua.
-        r = self.http.get(urljoin(BASE_URL, "essmedia.php?module=aktifitas_bulan"), timeout=20)
-        low_initial = r.text.lower()
-        if r.ok and "aktivitas harian tahun" in low_initial and "login area" not in low_initial:
-            self._persist()
-            return False
-        if not BeautifulSoup(r.text, "html.parser").find("form"):
-            r = self.http.get(BASE_URL, timeout=20)
+        r = self.http.get(BASE_URL, timeout=30)
         soup = BeautifulSoup(r.text, "html.parser")
         form = soup.find("form")
         if not form:
@@ -155,16 +117,9 @@ class EMasterClient:
         payload[user_field] = self.nip
         payload[pass_field] = self.password
         action = urljoin(r.url, form.get("action") or r.url)
-        out = self.http.post(action, data=payload, timeout=20, allow_redirects=True)
+        out = self.http.post(action, data=payload, timeout=30, allow_redirects=True)
         low = out.text.lower()
         if "two factor authentication" in low or "kode otp" in low or "index_mfa" in out.url:
-            mfa_soup = BeautifulSoup(out.text, "html.parser")
-            mfa_form = mfa_soup.find("form")
-            if not mfa_form:
-                raise EMasterError("Form OTP e-Master tidak ditemukan setelah login.")
-            self._mfa_action = urljoin(out.url, mfa_form.get("action") or out.url)
-            self._mfa_payload = self._form_payload(mfa_form)
-            self._mfa_referer = out.url
             return True
         if "aktivitas harian tahun" in low or self.is_authenticated():
             self._persist()
@@ -174,27 +129,24 @@ class EMasterClient:
     def submit_otp(self, otp: str) -> None:
         if not re.fullmatch(r"\d{6}", otp):
             raise EMasterError("OTP harus tepat 6 digit.")
-        if not self._mfa_action or self._mfa_payload is None:
-            raise EMasterError("Konteks login OTP sudah hilang. Jalankan /login kembali.")
-        payload = dict(self._mfa_payload)
-        payload["username"] = self.nip
-        payload["one_code"] = otp
-        headers = {"Origin": BASE_URL.rstrip("/")}
-        if self._mfa_referer:
-            headers["Referer"] = self._mfa_referer
-        out = self.http.post(self._mfa_action, data=payload, headers=headers,
-                             timeout=20, allow_redirects=False)
-        self._mfa_action = None
-        self._mfa_payload = None
-        self._mfa_referer = None
-        location = out.headers.get("Location", "")
-        # HAR browser menunjukkan keberhasilan resmi sebagai 302 ke halaman home.
-        if out.status_code not in (301, 302, 303) or "essmedia.php?module=home" not in location:
-            if "index_mfa" in location or "mfa" in location.lower():
-                raise EMasterError("OTP ditolak e-Master atau kode sudah berganti. Jalankan /login dan gunakan kode terbaru.")
-            raise EMasterError(f"e-Master tidak memberi konfirmasi login (HTTP {out.status_code}).")
-        # Ikuti redirect sukses sekali agar state server sama dengan browser.
-        self.http.get(urljoin(out.url, location), headers={"Referer": self._mfa_action or BASE_URL}, timeout=20)
+        url = urljoin(BASE_URL, f"index_mfa.php?user={self.nip}")
+        r = self.http.get(url, timeout=30)
+        soup = BeautifulSoup(r.text, "html.parser")
+        form = soup.find("form")
+        if not form:
+            raise EMasterError("Form OTP e-Master tidak ditemukan.")
+        payload = self._form_payload(form)
+        otp_field = _find_field(form, ("otp", "code", "kode", "token"))
+        if not otp_field:
+            candidates = form.select('input[type="text"][name], input[type="number"][name]')
+            otp_field = candidates[0].get("name") if candidates else None
+        if not otp_field:
+            raise EMasterError("Nama field OTP berubah; diperlukan pembaruan konektor.")
+        payload[otp_field] = otp
+        action = urljoin(r.url, form.get("action") or r.url)
+        self.http.post(action, data=payload, timeout=30, allow_redirects=True)
+        if not self.is_authenticated():
+            raise EMasterError("OTP ditolak atau sudah kedaluwarsa.")
         self._persist()
 
     def search_kamus(self, keyword: str, limit: int = 8) -> list[KamusItem]:
@@ -289,39 +241,6 @@ class EMasterClient:
             raise EMasterError("Total WPT terbaru tidak ditemukan pada halaman e-Master.")
         clean = lambda value: int(re.sub(r"\D", "", value or "0"))
         return MonthProgress(clean(activity_match.group(1) if activity_match else "0"), clean(wpt_match.group(1)))
-
-    def list_recent_activities(self, month: str, limit: int = 10) -> list[RemoteActivity]:
-        if not self.is_authenticated():
-            raise AuthenticationRequired("Sesi e-Master habis.")
-        activities: list[RemoteActivity] = []
-        for target in self.list_work_targets(month):
-            detail_url = target.add_url.replace("act=tambahaktifitas", "act=realisasi")
-            r = self.http.get(detail_url, timeout=30)
-            soup = BeautifulSoup(r.text, "html.parser")
-            for tr in soup.select("tbody tr"):
-                cells = [x.get_text(" ", strip=True) for x in tr.select("td")]
-                delete = tr.select_one('a[title="Delete"], a[title="delete"]')
-                if len(cells) < 10 or not cells[0].isdigit() or not delete:
-                    continue
-                delete_url = urljoin(r.url, delete.get("href", ""))
-                rid = re.search(r"id_realisasi=(\d+)", delete_url)
-                try:
-                    activities.append(RemoteActivity(
-                        rid.group(1) if rid else "", cells[2].replace("-", "/"), cells[3], cells[4],
-                        cells[5], int(cells[6]), int(cells[7]), int(cells[8]), delete_url))
-                except ValueError:
-                    continue
-        activities.sort(key=lambda x: int(x.realization_id or 0), reverse=True)
-        return activities[:limit]
-
-    def delete_activity(self, delete_url: str) -> None:
-        if not self.is_authenticated():
-            raise AuthenticationRequired("Sesi e-Master habis.")
-        if not delete_url.startswith(BASE_URL) or "act=delete" not in delete_url or "id_realisasi=" not in delete_url:
-            raise EMasterError("Alamat penghapusan tidak valid.")
-        r = self.http.get(delete_url, timeout=30, allow_redirects=True)
-        if not r.ok or "proses hapus" not in r.text.lower() and "info=delete" not in r.url.lower():
-            raise EMasterError("e-Master tidak mengonfirmasi penghapusan.")
 
     def submit_activity(self, *, month: str, target: WorkTarget, date: str,
                         item: KamusItem, volume: int, object_work: str) -> None:
