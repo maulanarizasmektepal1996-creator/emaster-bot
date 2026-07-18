@@ -82,6 +82,9 @@ class EMasterClient:
         self.fernet = Fernet(encryption_key.encode())
         self.session_path = Path(session_path)
         self.http = requests.Session()
+        self._mfa_action: str | None = None
+        self._mfa_payload: dict[str, str] | None = None
+        self._mfa_referer: str | None = None
         self.http.headers.update({"User-Agent": "Mozilla/5.0 EMasterPersonalTelegramBot/1.0"})
         self._restore()
 
@@ -133,6 +136,13 @@ class EMasterClient:
         out = self.http.post(action, data=payload, timeout=30, allow_redirects=True)
         low = out.text.lower()
         if "two factor authentication" in low or "kode otp" in low or "index_mfa" in out.url:
+            mfa_soup = BeautifulSoup(out.text, "html.parser")
+            mfa_form = mfa_soup.find("form")
+            if not mfa_form:
+                raise EMasterError("Form OTP e-Master tidak ditemukan setelah login.")
+            self._mfa_action = urljoin(out.url, mfa_form.get("action") or out.url)
+            self._mfa_payload = self._form_payload(mfa_form)
+            self._mfa_referer = out.url
             return True
         if "aktivitas harian tahun" in low or self.is_authenticated():
             self._persist()
@@ -142,24 +152,22 @@ class EMasterClient:
     def submit_otp(self, otp: str) -> None:
         if not re.fullmatch(r"\d{6}", otp):
             raise EMasterError("OTP harus tepat 6 digit.")
-        url = urljoin(BASE_URL, f"index_mfa.php?user={self.nip}")
-        r = self.http.get(url, timeout=30)
-        soup = BeautifulSoup(r.text, "html.parser")
-        form = soup.find("form")
-        if not form:
-            raise EMasterError("Form OTP e-Master tidak ditemukan.")
-        payload = self._form_payload(form)
-        otp_field = _find_field(form, ("otp", "code", "kode", "token"))
-        if not otp_field:
-            candidates = form.select('input[type="text"][name], input[type="number"][name]')
-            otp_field = candidates[0].get("name") if candidates else None
-        if not otp_field:
-            raise EMasterError("Nama field OTP berubah; diperlukan pembaruan konektor.")
-        payload[otp_field] = otp
-        action = urljoin(r.url, form.get("action") or r.url)
-        self.http.post(action, data=payload, timeout=30, allow_redirects=True)
+        if not self._mfa_action or self._mfa_payload is None:
+            raise EMasterError("Konteks login OTP sudah hilang. Jalankan /login kembali.")
+        payload = dict(self._mfa_payload)
+        payload["username"] = self.nip
+        payload["one_code"] = otp
+        headers = {"Referer": self._mfa_referer} if self._mfa_referer else None
+        out = self.http.post(self._mfa_action, data=payload, headers=headers,
+                             timeout=30, allow_redirects=True)
+        self._mfa_action = None
+        self._mfa_payload = None
+        self._mfa_referer = None
         if not self.is_authenticated():
-            raise EMasterError("OTP ditolak atau sudah kedaluwarsa.")
+            low = out.text.lower()
+            if "one_code" in low or "two factor authentication" in low:
+                raise EMasterError("OTP ditolak e-Master atau kode sudah berganti. Jalankan /login dan gunakan kode terbaru.")
+            raise EMasterError("OTP terkirim, tetapi sesi e-Master belum terbentuk. Coba /login sekali lagi.")
         self._persist()
 
     def search_kamus(self, keyword: str, limit: int = 8) -> list[KamusItem]:
