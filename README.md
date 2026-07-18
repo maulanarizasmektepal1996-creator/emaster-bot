@@ -12,7 +12,7 @@ Bot pribadi untuk mencari Kamus Aktivitas Disbudpar, menghitung WPT, meminta kon
 - Satuan dan WPT otomatis mengikuti kamus.
 - Validasi H+7 dan maksimum 660 menit per aktivitas yang dikirim.
 - Konfirmasi sebelum data dikirim.
-- Rekap lokal aktivitas yang dikirim melalui bot.
+- Progres mengambil total WPT terbaru langsung dari e‑Master, termasuk aktivitas yang diinput melalui situs.
 
 ## Catatan penting
 

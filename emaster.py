@@ -42,6 +42,12 @@ class WorkTarget:
     add_url: str
 
 
+@dataclass(frozen=True)
+class MonthProgress:
+    activities: int
+    minutes: int
+
+
 def _find_field(form, candidates: Iterable[str], input_type: str | None = None) -> str | None:
     lowered = tuple(x.lower() for x in candidates)
     for tag in form.select("input, select, textarea"):
@@ -175,11 +181,18 @@ class EMasterClient:
         page = self.http.get(urljoin(BASE_URL, "essmedia.php"),
                              params={"module": "aktifitas_bulan", "bulan": month}, timeout=30)
         soup = BeautifulSoup(page.text, "html.parser")
-        links = []
+        links: list[str] = []
         for a in soup.select("a[href]"):
             href = a.get("href", "")
             if "module=aktifitas_bulan" in href and "act=realisasi" in href and "id_breakdown=" in href:
                 links.append(urljoin(page.url, href))
+        # e-Master versi lama menggunakan onclick pada tombol bergambar kunci,
+        # bukan elemen <a>. Ambil URL dari JavaScript sederhana tersebut.
+        for tag in soup.select("[onclick]"):
+            onclick = tag.get("onclick", "")
+            match = re.search(r"(?:href|location)(?:\.href)?\s*=\s*['\"]([^'\"]+act=realisasi[^'\"]+)['\"]", onclick)
+            if match and "id_breakdown=" in match.group(1):
+                links.append(urljoin(page.url, match.group(1)))
         targets: list[WorkTarget] = []
         seen: set[str] = set()
         for detail_url in links:
@@ -187,24 +200,47 @@ class EMasterClient:
             dsoup = BeautifulSoup(detail.text, "html.parser")
             add_link = next((urljoin(detail.url, a.get("href")) for a in dsoup.select("a[href]")
                              if "act=tambahaktifitas" in a.get("href", "")), None)
+            if not add_link:
+                for tag in dsoup.select("[onclick]"):
+                    match = re.search(r"['\"]([^'\"]+act=tambahaktifitas[^'\"]+)['\"]", tag.get("onclick", ""))
+                    if match:
+                        add_link = urljoin(detail.url, match.group(1))
+                        break
             if not add_link or add_link in seen:
                 continue
             seen.add(add_link)
-            form_page = self.http.get(add_link, timeout=30)
-            fsoup = BeautifulSoup(form_page.text, "html.parser")
-            form = next((f for f in fsoup.find_all("form")
+            form = next((f for f in dsoup.find_all("form")
                          if f.select_one('[name="breakdown_id"]')), None)
             if not form:
                 continue
             values = self._form_payload(form)
-            target_name = values.get("detail_kegiatan", "").strip()
-            if not target_name:
-                label = fsoup.find(string=re.compile("Kegiatan Tugas Jabatan", re.I))
-                target_name = label.find_next("textarea").get_text(strip=True) if label else ""
+            target_name = ""
+            target_table = form.select_one("table")
+            if target_table:
+                rows = target_table.select("tbody tr")
+                for row in rows:
+                    cells = [x.get_text(" ", strip=True) for x in row.select("td")]
+                    if len(cells) >= 3 and cells[0].isdigit():
+                        target_name = cells[2]
+                        break
             if all(values.get(k) for k in ("breakdown_id", "target_id", "informasi_id")):
                 targets.append(WorkTarget(target_name, values["breakdown_id"], values["target_id"],
                                           values["informasi_id"], add_link))
         return targets
+
+    def get_month_progress(self, month: str) -> MonthProgress:
+        """Read the current server totals, including entries made outside this bot."""
+        if not self.is_authenticated():
+            raise AuthenticationRequired("Sesi e-Master habis.")
+        r = self.http.get(urljoin(BASE_URL, "essmedia.php"),
+                          params={"module": "aktifitas_bulan", "bulan": month}, timeout=30)
+        plain = BeautifulSoup(r.text, "html.parser").get_text(" ", strip=True)
+        activity_match = re.search(r"Total\s+Aktifitas\s+Bulan\s+\d+\s*:\s*([\d.,]+)", plain, re.I)
+        wpt_match = re.search(r"Total\s+WPT\s+Aktifitas\s+Bulan\s+\d+\s*:\s*([\d.,]+)\s*Menit", plain, re.I)
+        if not wpt_match:
+            raise EMasterError("Total WPT terbaru tidak ditemukan pada halaman e-Master.")
+        clean = lambda value: int(re.sub(r"\D", "", value or "0"))
+        return MonthProgress(clean(activity_match.group(1) if activity_match else "0"), clean(wpt_match.group(1)))
 
     def submit_activity(self, *, month: str, target: WorkTarget, date: str,
                         item: KamusItem, volume: int, object_work: str) -> None:

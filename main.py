@@ -87,7 +87,8 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @private
 async def get_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        date = datetime.strptime(update.message.text.strip(), "%d/%m/%Y")
+        raw_date = update.message.text.strip().replace("-", "/")
+        date = datetime.strptime(raw_date, "%d/%m/%Y")
     except ValueError:
         await update.message.reply_text("Format tidak valid. Gunakan DD/MM/YYYY.")
         return DATE
@@ -219,10 +220,19 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @private
 async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now()
-    count, minutes = storage.month_total(now.strftime("%m/%Y"))
+    try:
+        current = client.get_month_progress(now.strftime("%m"))
+        count, minutes = current.activities, current.minutes
+        source = "Data terbaru e‑Master"
+    except AuthenticationRequired:
+        await update.message.reply_text("🔐 Sesi e‑Master habis. Jalankan /login, lalu /progres kembali.")
+        return
+    except EMasterError as exc:
+        await update.message.reply_text(f"❌ Tidak dapat memperbarui progres: {exc}")
+        return
     target = 6750
     pct = min(100, minutes / target * 100)
-    await update.message.reply_text(f"📊 Progres {now:%B %Y}\nAktivitas terkirim via bot: {count}\nWPT: {minutes}/{target} menit ({pct:.1f}%)\nKekurangan: {max(0,target-minutes)} menit")
+    await update.message.reply_text(f"📊 Progres {now:%B %Y}\n{source}\nJumlah aktivitas: {count}\nWPT: {minutes}/{target} menit ({pct:.1f}%)\nKekurangan: {max(0,target-minutes)} menit")
 
 
 @private
@@ -247,6 +257,7 @@ def main():
         CONFIRM: [CallbackQueryHandler(confirm, pattern=r"^(send|cancel)$")],
     }, fallbacks=[CommandHandler("batal", cancel)]))
     app.add_handler(CommandHandler("progres", progress))
+    app.add_handler(CommandHandler("batal", cancel))
     app.run_polling(drop_pending_updates=True)
 
 
