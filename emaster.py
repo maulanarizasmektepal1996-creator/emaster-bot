@@ -116,7 +116,21 @@ class EMasterClient:
     def is_authenticated(self) -> bool:
         r = self.http.get(urljoin(BASE_URL, "essmedia.php?module=aktifitas_bulan"), timeout=30)
         text = r.text.lower()
-        return r.ok and "aktivitas harian tahun" in text and "login area" not in text
+        if not r.ok or "login area" in text:
+            return False
+        soup = BeautifulSoup(r.text, "html.parser")
+        login_form = soup.select_one('form input[name="username"]') and soup.select_one('form input[name="password"]')
+        if login_form:
+            return False
+        # Sesudah MFA e-Master dapat mengembalikan home/dashboard terlebih dahulu.
+        # Menu logout hanya tersedia pada halaman ESS yang sudah terautentikasi.
+        authenticated_markers = (
+            "aktivitas harian tahun",
+            "logout.php",
+            "module=home",
+            "dashboard - 2026",
+        )
+        return any(marker in text for marker in authenticated_markers)
 
     def begin_login(self) -> bool:
         """Login NIP/password. Returns True when OTP is required."""
