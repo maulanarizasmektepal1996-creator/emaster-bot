@@ -165,17 +165,22 @@ class EMasterClient:
         payload = dict(self._mfa_payload)
         payload["username"] = self.nip
         payload["one_code"] = otp
-        headers = {"Referer": self._mfa_referer} if self._mfa_referer else None
+        headers = {"Origin": BASE_URL.rstrip("/")}
+        if self._mfa_referer:
+            headers["Referer"] = self._mfa_referer
         out = self.http.post(self._mfa_action, data=payload, headers=headers,
-                             timeout=30, allow_redirects=True)
+                             timeout=20, allow_redirects=False)
         self._mfa_action = None
         self._mfa_payload = None
         self._mfa_referer = None
-        if not self.is_authenticated():
-            low = out.text.lower()
-            if "one_code" in low or "two factor authentication" in low:
+        location = out.headers.get("Location", "")
+        # HAR browser menunjukkan keberhasilan resmi sebagai 302 ke halaman home.
+        if out.status_code not in (301, 302, 303) or "essmedia.php?module=home" not in location:
+            if "index_mfa" in location or "mfa" in location.lower():
                 raise EMasterError("OTP ditolak e-Master atau kode sudah berganti. Jalankan /login dan gunakan kode terbaru.")
-            raise EMasterError("OTP terkirim, tetapi sesi e-Master belum terbentuk. Coba /login sekali lagi.")
+            raise EMasterError(f"e-Master tidak memberi konfirmasi login (HTTP {out.status_code}).")
+        # Ikuti redirect sukses sekali agar state server sama dengan browser.
+        self.http.get(urljoin(out.url, location), headers={"Referer": self._mfa_action or BASE_URL}, timeout=20)
         self._persist()
 
     def search_kamus(self, keyword: str, limit: int = 8) -> list[KamusItem]:
