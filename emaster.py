@@ -33,6 +33,15 @@ class KamusItem:
     object_hint: str
 
 
+@dataclass(frozen=True)
+class WorkTarget:
+    name: str
+    breakdown_id: str
+    target_id: str
+    informasi_id: str
+    add_url: str
+
+
 def _find_field(form, candidates: Iterable[str], input_type: str | None = None) -> str | None:
     lowered = tuple(x.lower() for x in candidates)
     for tag in form.select("input, select, textarea"):
@@ -159,15 +168,52 @@ class EMasterClient:
                 break
         return found
 
-    def submit_activity(self, *, month: str, breakdown_id: str, target_id: str,
-                        informasi_id: str, target_name: str, date: str,
+    def list_work_targets(self, month: str) -> list[WorkTarget]:
+        """Read every personal Kegiatan Tugas Jabatan and its hidden IDs."""
+        if not self.is_authenticated():
+            raise AuthenticationRequired("Sesi e-Master habis.")
+        page = self.http.get(urljoin(BASE_URL, "essmedia.php"),
+                             params={"module": "aktifitas_bulan", "bulan": month}, timeout=30)
+        soup = BeautifulSoup(page.text, "html.parser")
+        links = []
+        for a in soup.select("a[href]"):
+            href = a.get("href", "")
+            if "module=aktifitas_bulan" in href and "act=realisasi" in href and "id_breakdown=" in href:
+                links.append(urljoin(page.url, href))
+        targets: list[WorkTarget] = []
+        seen: set[str] = set()
+        for detail_url in links:
+            detail = self.http.get(detail_url, timeout=30)
+            dsoup = BeautifulSoup(detail.text, "html.parser")
+            add_link = next((urljoin(detail.url, a.get("href")) for a in dsoup.select("a[href]")
+                             if "act=tambahaktifitas" in a.get("href", "")), None)
+            if not add_link or add_link in seen:
+                continue
+            seen.add(add_link)
+            form_page = self.http.get(add_link, timeout=30)
+            fsoup = BeautifulSoup(form_page.text, "html.parser")
+            form = next((f for f in fsoup.find_all("form")
+                         if f.select_one('[name="breakdown_id"]')), None)
+            if not form:
+                continue
+            values = self._form_payload(form)
+            target_name = values.get("detail_kegiatan", "").strip()
+            if not target_name:
+                label = fsoup.find(string=re.compile("Kegiatan Tugas Jabatan", re.I))
+                target_name = label.find_next("textarea").get_text(strip=True) if label else ""
+            if all(values.get(k) for k in ("breakdown_id", "target_id", "informasi_id")):
+                targets.append(WorkTarget(target_name, values["breakdown_id"], values["target_id"],
+                                          values["informasi_id"], add_link))
+        return targets
+
+    def submit_activity(self, *, month: str, target: WorkTarget, date: str,
                         item: KamusItem, volume: int, object_work: str) -> None:
         if not self.is_authenticated():
             raise AuthenticationRequired("Sesi e-Master habis.")
         endpoint = urljoin(BASE_URL, "modul_essmankin/mod_aktifitas_bulan/aksi_aktifitas_bulan.php")
         data = {
-            "bulan": month, "breakdown_id": breakdown_id, "target_id": target_id,
-            "informasi_id": informasi_id, "tugas": "", "detail_kegiatan": target_name,
+            "bulan": month, "breakdown_id": target.breakdown_id, "target_id": target.target_id,
+            "informasi_id": target.informasi_id, "tugas": "", "detail_kegiatan": target.name,
             "tgl_kegiatan": date, "rk": f"{item.code}-{item.activity}",
             "satuan": item.unit, "wpt": str(item.wpt), "volume": str(volume),
             "objek_kerja": object_work, "submit": "",
@@ -179,4 +225,3 @@ class EMasterClient:
         if r.status_code not in (301, 302, 303) or "info=insert" not in location:
             raise EMasterError(f"e-Master tidak mengonfirmasi penyimpanan (HTTP {r.status_code}).")
         self._persist()
-

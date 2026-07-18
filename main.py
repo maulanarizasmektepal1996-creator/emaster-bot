@@ -9,7 +9,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, ConversationHandler, MessageHandler, filters)
 
-from emaster import AuthenticationRequired, EMasterClient, EMasterError, KamusItem
+from emaster import AuthenticationRequired, EMasterClient, EMasterError, KamusItem, WorkTarget
 from storage import Storage
 
 load_dotenv()
@@ -21,7 +21,7 @@ client = EMasterClient(os.environ["EMASTER_NIP"], os.environ["EMASTER_PASSWORD"]
                        os.environ["ENCRYPTION_KEY"], os.getenv("SESSION_PATH", "/data/emaster_session.bin"))
 storage = Storage(os.getenv("DATABASE_PATH", "/data/emaster_bot.db"))
 
-DATE, SEARCH, PICK, VOLUME, OBJECT, CONFIRM, OTP = range(7)
+DATE, TARGET, SEARCH, PICK, VOLUME, OBJECT, CONFIRM, OTP = range(8)
 
 
 def private(fn):
@@ -95,7 +95,33 @@ async def get_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Tanggal lebih dari H+7. e‑Master kemungkinan menolak. Ketik tanggal lain.")
         return DATE
     context.user_data["date"] = date.strftime("%d/%m/%Y")
-    await update.message.reply_text("🔎 Ketik kata kunci kamus aktivitas, misalnya: video, rapat, dokumen")
+    try:
+        targets = client.list_work_targets(date.strftime("%m"))
+    except AuthenticationRequired:
+        await update.message.reply_text("🔐 Sesi habis. Jalankan /login lalu ulangi.")
+        return ConversationHandler.END
+    except EMasterError as exc:
+        await update.message.reply_text(f"❌ {exc}")
+        return ConversationHandler.END
+    if not targets:
+        await update.message.reply_text("❌ Kegiatan Tugas Jabatan tidak ditemukan untuk bulan tersebut.")
+        return ConversationHandler.END
+    context.user_data["targets"] = targets
+    buttons = [[InlineKeyboardButton(t.name[:55], callback_data=f"target:{i}")]
+               for i, t in enumerate(targets)]
+    await update.message.reply_text("Pilih Kegiatan Tugas Jabatan:", reply_markup=InlineKeyboardMarkup(buttons))
+    return TARGET
+
+
+@private
+async def pick_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    idx = int(query.data.split(":")[1])
+    target: WorkTarget = context.user_data["targets"][idx]
+    context.user_data["target"] = target
+    await query.edit_message_text(f"✅ Tugas jabatan:\n{target.name}")
+    await query.message.reply_text("🔎 Ketik kata kunci kamus aktivitas, misalnya: video, rapat, dokumen")
     return SEARCH
 
 
@@ -159,6 +185,7 @@ async def object_work(update: Update, context: ContextTypes.DEFAULT_TYPE):
     item = context.user_data["item"]
     vol = context.user_data["volume"]
     summary = (f"📋 KONFIRMASI\n\nTanggal: {context.user_data['date']}\n"
+               f"Tugas jabatan: {context.user_data['target'].name}\n"
                f"Aktivitas: {item.code} — {item.activity}\nSatuan: {item.unit}\n"
                f"WPT: {item.wpt} × {vol} = {item.wpt*vol} menit\nObjek kerja: {text}")
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Kirim ke e‑Master", callback_data="send"),
@@ -178,9 +205,7 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     date = context.user_data["date"]
     try:
         client.submit_activity(
-            month=date[3:5], breakdown_id=os.environ["EMASTER_BREAKDOWN_ID"],
-            target_id=os.environ["EMASTER_TARGET_ID"], informasi_id=os.environ["EMASTER_INFORMASI_ID"],
-            target_name=os.environ["EMASTER_TARGET_NAME"], date=date, item=item,
+            month=date[3:5], target=context.user_data["target"], date=date, item=item,
             volume=context.user_data["volume"], object_work=context.user_data["object"])
         storage.add_sent(date, item, context.user_data["volume"], context.user_data["object"])
         await query.edit_message_text("✅ Aktivitas berhasil dikirim ke e‑Master.")
@@ -214,6 +239,7 @@ def main():
         states={OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, otp)]}, fallbacks=[CommandHandler("batal", cancel)]))
     app.add_handler(ConversationHandler(entry_points=[CommandHandler("tambah", add)], states={
         DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_date)],
+        TARGET: [CallbackQueryHandler(pick_target, pattern=r"^target:\d+$")],
         SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, search)],
         PICK: [CallbackQueryHandler(pick, pattern=r"^pick:\d+$")],
         VOLUME: [MessageHandler(filters.TEXT & ~filters.COMMAND, volume)],
@@ -226,4 +252,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

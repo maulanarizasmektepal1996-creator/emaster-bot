@@ -8,6 +8,7 @@ Bot pribadi untuk mencari Kamus Aktivitas Disbudpar, menghitung WPT, meminta kon
 - Login NIP/password dan OTP Google Authenticator saat sesi berakhir.
 - Cookie sesi disimpan terenkripsi.
 - Pencarian Kamus Aktivitas langsung dari e‑Master.
+- Mengambil semua Kegiatan Tugas Jabatan secara otomatis dan menampilkannya sebagai pilihan.
 - Satuan dan WPT otomatis mengikuti kamus.
 - Validasi H+7 dan maksimum 660 menit per aktivitas yang dikirim.
 - Konfirmasi sebelum data dikirim.
@@ -31,19 +32,6 @@ Jalankan sekali di komputer:
 ```bash
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
-
-## Menentukan ID target
-
-Empat nilai target bersifat pribadi untuk baris **Kegiatan Tugas Jabatan** yang dipilih:
-
-- `EMASTER_BREAKDOWN_ID`
-- `EMASTER_TARGET_ID`
-- `EMASTER_INFORMASI_ID`
-- `EMASTER_BREAKDOWN_HASH`
-
-Nilai tiga ID pertama terlihat pada request POST `aksi_aktifitas_bulan.php` di DevTools Network. Hash terlihat pada URL halaman Tambah Aktivitas setelah `id_breakdown=`. Jangan memakai ID milik pegawai lain.
-
-`EMASTER_TARGET_NAME` diisi persis dengan nama Kegiatan Tugas Jabatan, misalnya `Mengolah dan menerbitkan konten media`.
 
 ## Deploy Railway
 
@@ -71,4 +59,3 @@ Untuk lokal, ubah `DATABASE_PATH=./data/emaster_bot.db` dan `SESSION_PATH=./data
 ## Pemeriksaan pertama
 
 Gunakan satu aktivitas uji yang benar, tekan konfirmasi, lalu buka e‑Master dan pastikan tanggal, aktivitas, WPT, volume, dan objek kerja sama persis. Jika login gagal karena struktur form berubah, jangan mencoba OTP berulang kali; lihat log tanpa mengaktifkan debug yang dapat merekam data sensitif.
-
