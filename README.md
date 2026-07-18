@@ -1,10 +1,13 @@
-# Bot Telegram Aktivitas e‑Master (Mode Pribadi)
+# Bot Telegram Aktivitas e‑Master (Multipegawai)
 
-Bot pribadi untuk mencari Kamus Aktivitas Disbudpar, menghitung WPT, meminta konfirmasi, lalu mengirim aktivitas ke e‑Master BKD Jawa Timur.
+Bot admin-terkelola untuk mencari Kamus Aktivitas Disbudpar, menghitung WPT, meminta konfirmasi, lalu mengirim aktivitas ke akun e‑Master masing-masing pegawai.
 
 ## Fitur
 
-- Hanya menerima perintah dari satu `TELEGRAM_USER_ID`.
+- Admin mendaftarkan pegawai berdasarkan Telegram ID dan NIP.
+- Password dimasukkan sendiri oleh pegawai, langsung dihapus dari chat, lalu disimpan terenkripsi.
+- Akun, cookie sesi, dashboard WPT, dan riwayat setiap pegawai terpisah.
+- Admin dapat melihat status dan menonaktifkan pegawai.
 - Login NIP/password dan OTP Google Authenticator saat sesi berakhir.
 - Cookie sesi disimpan terenkripsi.
 - Pencarian Kamus Aktivitas langsung dari e‑Master.
@@ -27,6 +30,19 @@ Bot pribadi untuk mencari Kamus Aktivitas Disbudpar, menghitung WPT, meminta kon
 - `/dashboard` atau `/progres` — melihat WPT terbaru.
 - `/riwayat` — melihat aktivitas terakhir dari bot.
 - `/batal` — menghentikan proses pengisian.
+- `/tambahpegawai` — admin mendaftarkan pegawai.
+- `/aktifkan` — pegawai melengkapi password setelah diundang admin.
+
+## Menambahkan pegawai
+
+1. Pegawai membuka bot dan menjalankan `/start` untuk melihat Telegram ID.
+2. Admin memilih **Kelola Pegawai → Tambah Pegawai** atau menjalankan `/tambahpegawai`.
+3. Admin memasukkan Telegram ID, NIP, dan nama pegawai.
+4. Pegawai menjalankan `/aktifkan`, lalu mengirim password e‑Master sendiri.
+5. Pesan password otomatis dihapus dan disimpan menggunakan enkripsi Fernet.
+6. Pegawai menjalankan `/login` dan memasukkan OTP Google Authenticator miliknya.
+
+Jangan membagikan akun Telegram. Admin tidak dapat melihat password asli pegawai melalui menu bot.
 
 ## Catatan penting
 

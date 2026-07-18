@@ -3,7 +3,9 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timedelta
+from pathlib import Path
 
+from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
@@ -17,35 +19,62 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 OWNER = int(os.environ["TELEGRAM_USER_ID"])
-client = EMasterClient(os.environ["EMASTER_NIP"], os.environ["EMASTER_PASSWORD"],
-                       os.environ["ENCRYPTION_KEY"], os.getenv("SESSION_PATH", "/data/emaster_session.bin"))
 storage = Storage(os.getenv("DATABASE_PATH", "/data/emaster_bot.db"))
+fernet = Fernet(os.environ["ENCRYPTION_KEY"].encode())
+storage.ensure_admin(OWNER, os.environ["EMASTER_NIP"],
+                     fernet.encrypt(os.environ["EMASTER_PASSWORD"].encode()).decode())
+storage.claim_legacy_activities(OWNER)
+clients: dict[int, EMasterClient] = {}
+session_dir = Path(os.getenv("SESSION_PATH", "/data/emaster_session.bin")).parent / "sessions"
 
-DATE, TARGET, SEARCH, PICK, VOLUME, OBJECT, CONFIRM, OTP = range(8)
+
+def get_client(telegram_id: int) -> EMasterClient:
+    user = storage.get_user(telegram_id)
+    if not user or user[4] != "active" or not user[2]:
+        raise EMasterError("Akun belum aktif.")
+    if telegram_id not in clients:
+        password = fernet.decrypt(user[2].encode()).decode()
+        session_path = os.getenv("SESSION_PATH", "/data/emaster_session.bin") if telegram_id == OWNER else str(session_dir / f"{telegram_id}.bin")
+        clients[telegram_id] = EMasterClient(user[1], password, os.environ["ENCRYPTION_KEY"],
+                                             session_path)
+    return clients[telegram_id]
+
+DATE, TARGET, SEARCH, PICK, VOLUME, OBJECT, CONFIRM, OTP, ADMIN_TGID, ADMIN_NIP, ADMIN_NAME, ACTIVATE_PASSWORD = range(12)
 
 
 def private(fn):
     async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not update.effective_user or update.effective_user.id != OWNER:
+        user = storage.get_user(update.effective_user.id) if update.effective_user else None
+        if not user or user[4] != "active":
             if update.effective_message:
-                await update.effective_message.reply_text("⛔ Bot pribadi. Akses ditolak.")
+                await update.effective_message.reply_text("⛔ Akun belum aktif. Minta admin mendaftarkan Telegram ID Anda, lalu gunakan /aktifkan.")
             return ConversationHandler.END
         return await fn(update, context)
     return wrapped
 
 
-@private
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await show_menu(update.effective_message)
+    user = storage.get_user(update.effective_user.id)
+    if not user:
+        await update.message.reply_text(f"👋 Telegram ID Anda: `{update.effective_user.id}`\n\nMinta admin mendaftarkan ID ini.", parse_mode="Markdown")
+    elif user[4] == "invited":
+        await update.message.reply_text("✅ Anda sudah didaftarkan admin. Jalankan /aktifkan untuk membuat akses pribadi.")
+    elif user[4] == "disabled":
+        await update.message.reply_text("⛔ Akun dinonaktifkan oleh admin.")
+    else:
+        await show_menu(update.effective_message, bool(user[5]))
 
 
-async def show_menu(message):
-    keyboard = InlineKeyboardMarkup([
+async def show_menu(message, is_admin=False):
+    rows = [
         [InlineKeyboardButton("➕ Tambah Aktivitas", callback_data="menu:add")],
         [InlineKeyboardButton("📊 Dashboard WPT", callback_data="menu:progress"),
          InlineKeyboardButton("🕘 Riwayat", callback_data="menu:history")],
         [InlineKeyboardButton("🔐 Login / Cek Sesi", callback_data="menu:login")],
-    ])
+    ]
+    if is_admin:
+        rows.append([InlineKeyboardButton("👥 Kelola Pegawai", callback_data="menu:users")])
+    keyboard = InlineKeyboardMarkup(rows)
     await message.reply_text(
         "✨ *AKTIVITAS HARIAN E‑MASTER*\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
@@ -60,6 +89,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.answer()
     status = await message.reply_text("⏳ Memeriksa sesi e‑Master…")
     try:
+        client = get_client(update.effective_user.id)
         if client.is_authenticated():
             await status.edit_text("✅ *SESI AKTIF*\n\nBot siap digunakan.", parse_mode="Markdown")
             return ConversationHandler.END
@@ -84,12 +114,13 @@ async def otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
     try:
+        client = get_client(update.effective_user.id)
         client.submit_otp(code)
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("➕ Tambah Aktivitas", callback_data="menu:add"),
                                     InlineKeyboardButton("📊 Dashboard", callback_data="menu:progress")]])
-        await context.bot.send_message(OWNER, "✅ *LOGIN BERHASIL*\nSesi e‑Master sudah aktif.", parse_mode="Markdown", reply_markup=kb)
+        await context.bot.send_message(update.effective_user.id, "✅ *LOGIN BERHASIL*\nSesi e‑Master sudah aktif.", parse_mode="Markdown", reply_markup=kb)
     except EMasterError as exc:
-        await context.bot.send_message(OWNER, f"❌ {exc}")
+        await context.bot.send_message(update.effective_user.id, f"❌ {exc}")
     return ConversationHandler.END
 
 
@@ -98,6 +129,7 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     if update.callback_query:
         await update.callback_query.answer()
+    client = get_client(update.effective_user.id)
     if not client.is_authenticated():
         await message.reply_text("🔐 Sesi belum aktif. Tekan Login terlebih dahulu.",
                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔐 Login", callback_data="menu:login")]]))
@@ -139,6 +171,7 @@ async def quick_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def load_targets(update: Update, context: ContextTypes.DEFAULT_TYPE, date: datetime):
     message = update.effective_message
+    client = get_client(update.effective_user.id)
     if (datetime.now().date() - date.date()).days > 7:
         await message.reply_text("⚠️ Tanggal melewati batas H+7. Silakan pilih tanggal lain.")
         return DATE
@@ -175,6 +208,7 @@ async def pick_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @private
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    client = get_client(update.effective_user.id)
     try:
         items = client.search_kamus(update.message.text.strip())
     except AuthenticationRequired:
@@ -254,10 +288,11 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     item = context.user_data["item"]
     date = context.user_data["date"]
     try:
+        client = get_client(update.effective_user.id)
         client.submit_activity(
             month=date[3:5], target=context.user_data["target"], date=date, item=item,
             volume=context.user_data["volume"], object_work=context.user_data["object"])
-        storage.add_sent(date, item, context.user_data["volume"], context.user_data["object"])
+        storage.add_sent(update.effective_user.id, date, item, context.user_data["volume"], context.user_data["object"])
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("➕ Tambah Lagi", callback_data="menu:add"),
                                     InlineKeyboardButton("📊 Dashboard", callback_data="menu:progress")],
                                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu:home")]])
@@ -277,6 +312,7 @@ async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     now = datetime.now()
     try:
+        client = get_client(update.effective_user.id)
         current = client.get_month_progress(now.strftime("%m"))
         count, minutes = current.activities, current.minutes
         source = "Data terbaru e‑Master"
@@ -308,7 +344,7 @@ async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         await update.callback_query.answer()
-    rows = storage.recent(8)
+    rows = storage.recent(update.effective_user.id, 8)
     if not rows:
         await update.effective_message.reply_text("🕘 Belum ada aktivitas yang dikirim melalui bot.")
         return
@@ -323,7 +359,130 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @private
 async def menu_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    await show_menu(update.effective_message)
+    user = storage.get_user(update.effective_user.id)
+    await show_menu(update.effective_message, bool(user and user[5]))
+
+
+def admin_only(update: Update) -> bool:
+    user = storage.get_user(update.effective_user.id)
+    return bool(user and user[5] and user[4] == "active")
+
+
+async def add_employee(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        await update.callback_query.answer()
+    if not admin_only(update):
+        await update.effective_message.reply_text("⛔ Khusus admin.")
+        return ConversationHandler.END
+    context.user_data.clear()
+    await update.effective_message.reply_text(
+        "👥 *TAMBAH PEGAWAI*\n\nMasukkan Telegram ID pegawai.\nPegawai dapat melihat ID melalui `/start`.",
+        parse_mode="Markdown")
+    return ADMIN_TGID
+
+
+async def employee_tgid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        telegram_id = int(update.message.text.strip())
+        if telegram_id <= 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text("Telegram ID harus berupa angka.")
+        return ADMIN_TGID
+    context.user_data["new_telegram_id"] = telegram_id
+    await update.message.reply_text("Masukkan NIP pegawai:")
+    return ADMIN_NIP
+
+
+async def employee_nip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    nip = update.message.text.strip()
+    if not nip.isdigit() or len(nip) < 10:
+        await update.message.reply_text("NIP tidak valid. Masukkan angka NIP lengkap.")
+        return ADMIN_NIP
+    context.user_data["new_nip"] = nip
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    await context.bot.send_message(update.effective_user.id, "Masukkan nama pegawai:")
+    return ADMIN_NAME
+
+
+async def employee_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = update.message.text.strip()
+    telegram_id = context.user_data["new_telegram_id"]
+    storage.invite_user(telegram_id, context.user_data["new_nip"], name)
+    await update.message.reply_text(
+        f"✅ *UNDANGAN DIBUAT*\n\nNama: {name}\nTelegram ID: `{telegram_id}`\n\n"
+        "Minta pegawai membuka bot, tekan /start, lalu /aktifkan.", parse_mode="Markdown")
+    try:
+        await context.bot.send_message(telegram_id,
+            f"👋 Halo {name}, Anda telah didaftarkan ke Bot Aktivitas e‑Master.\nJalankan /aktifkan untuk memasukkan password pribadi.")
+    except Exception:
+        pass
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = storage.get_user(update.effective_user.id)
+    if not user:
+        await update.message.reply_text("⛔ Telegram ID Anda belum didaftarkan admin.")
+        return ConversationHandler.END
+    if user[4] == "active":
+        await update.message.reply_text("✅ Akun sudah aktif. Gunakan /login.")
+        return ConversationHandler.END
+    if user[4] != "invited":
+        await update.message.reply_text("⛔ Akun tidak dapat diaktifkan. Hubungi admin.")
+        return ConversationHandler.END
+    await update.message.reply_text(
+        "🔐 *AKTIVASI AKUN*\n\nKirim password e‑Master Anda. Pesan akan langsung dihapus dan password disimpan terenkripsi.",
+        parse_mode="Markdown")
+    return ACTIVATE_PASSWORD
+
+
+async def activate_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    password = update.message.text
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    if len(password) < 4:
+        await context.bot.send_message(update.effective_user.id, "Password terlalu pendek. Jalankan /aktifkan kembali.")
+        return ConversationHandler.END
+    encrypted = fernet.encrypt(password.encode()).decode()
+    storage.activate_user(update.effective_user.id, encrypted)
+    clients.pop(update.effective_user.id, None)
+    await context.bot.send_message(update.effective_user.id,
+        "✅ *AKUN AKTIF*\nPassword telah dienkripsi. Sekarang jalankan /login dan masukkan OTP Anda.", parse_mode="Markdown")
+    return ConversationHandler.END
+
+
+async def users_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        await update.callback_query.answer()
+    if not admin_only(update):
+        await update.effective_message.reply_text("⛔ Khusus admin.")
+        return
+    rows = storage.list_users()
+    text = ["👥 *KELOLA PEGAWAI*", "━━━━━━━━━━━━━━━━━━━━"]
+    buttons = [[InlineKeyboardButton("➕ Tambah Pegawai", callback_data="admin:add")]]
+    for tid, nip, name, status, is_admin in rows:
+        icon = "👑" if is_admin else ("✅" if status == "active" else "⏳" if status == "invited" else "⛔")
+        text.append(f"\n{icon} *{name or 'Tanpa nama'}*\nID: `{tid}` · Status: {status}")
+        if not is_admin and status != "disabled":
+            buttons.append([InlineKeyboardButton(f"⛔ Nonaktifkan {name or tid}", callback_data=f"admin:disable:{tid}")])
+    await update.effective_message.reply_text("\n".join(text), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def disable_employee(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    if not admin_only(update):
+        return
+    telegram_id = int(update.callback_query.data.split(":")[2])
+    storage.disable_user(telegram_id)
+    clients.pop(telegram_id, None)
+    await update.callback_query.edit_message_text("✅ Pegawai dinonaktifkan. Data pegawai lain tidak berubah.")
 
 
 @private
@@ -336,6 +495,17 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(os.environ["BOT_TOKEN"]).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(ConversationHandler(
+        entry_points=[CommandHandler("tambahpegawai", add_employee),
+                      CallbackQueryHandler(add_employee, pattern=r"^admin:add$")],
+        states={ADMIN_TGID: [MessageHandler(filters.TEXT & ~filters.COMMAND, employee_tgid)],
+                ADMIN_NIP: [MessageHandler(filters.TEXT & ~filters.COMMAND, employee_nip)],
+                ADMIN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, employee_name)]},
+        fallbacks=[CommandHandler("batal", cancel)]))
+    app.add_handler(ConversationHandler(
+        entry_points=[CommandHandler("aktifkan", activate)],
+        states={ACTIVATE_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, activate_password)]},
+        fallbacks=[CommandHandler("batal", cancel)]))
     app.add_handler(ConversationHandler(entry_points=[CommandHandler("login", login),
                                                         CallbackQueryHandler(login, pattern=r"^menu:login$")],
         states={OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, otp)]}, fallbacks=[CommandHandler("batal", cancel)]))
@@ -357,6 +527,8 @@ def main():
     app.add_handler(CallbackQueryHandler(progress, pattern=r"^menu:progress$"))
     app.add_handler(CallbackQueryHandler(history, pattern=r"^menu:history$"))
     app.add_handler(CallbackQueryHandler(menu_home, pattern=r"^menu:home$"))
+    app.add_handler(CallbackQueryHandler(users_menu, pattern=r"^menu:users$"))
+    app.add_handler(CallbackQueryHandler(disable_employee, pattern=r"^admin:disable:\d+$"))
     app.run_polling(drop_pending_updates=True)
 
 
