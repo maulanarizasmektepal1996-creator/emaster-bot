@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from datetime import datetime, time
@@ -49,17 +50,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @private
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status = await update.message.reply_text("⏳ Menghubungkan ke e‑Master…")
     try:
-        if client.is_authenticated():
-            await update.message.reply_text("✅ Sesi e‑Master masih aktif.")
-            return ConversationHandler.END
-        needs_otp = client.begin_login()
+        needs_otp = await asyncio.to_thread(client.begin_login)
         if needs_otp:
-            await update.message.reply_text("🔐 Masukkan OTP Google Authenticator 6 digit. Pesan akan dihapus setelah diproses.")
+            await status.edit_text("🔐 Masukkan OTP Google Authenticator 6 digit. Pesan akan dihapus setelah diproses.")
             return OTP
-        await update.message.reply_text("✅ Login e‑Master berhasil.")
+        await status.edit_text("✅ Sesi e‑Master masih aktif dan siap digunakan.")
     except EMasterError as exc:
-        await update.message.reply_text(f"❌ {exc}")
+        await status.edit_text(f"❌ {exc}")
+    except Exception:
+        logging.exception("Koneksi login e-Master gagal")
+        await status.edit_text("❌ e‑Master terlalu lama merespons. Coba /login kembali beberapa saat lagi.")
     return ConversationHandler.END
 
 
@@ -71,7 +73,7 @@ async def otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
     try:
-        client.submit_otp(code)
+        await asyncio.to_thread(client.submit_otp, code)
         await context.bot.send_message(OWNER, "✅ OTP diterima. Sesi e‑Master aktif.")
     except EMasterError as exc:
         await context.bot.send_message(OWNER, f"❌ {exc}")

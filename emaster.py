@@ -120,7 +120,15 @@ class EMasterClient:
 
     def begin_login(self) -> bool:
         """Login NIP/password. Returns True when OTP is required."""
-        r = self.http.get(BASE_URL, timeout=30)
+        # Satu request ini sekaligus mengecek cookie lama. Jika sesi habis,
+        # e-Master mengarahkan respons ke halaman login sehingga tidak perlu GET kedua.
+        r = self.http.get(urljoin(BASE_URL, "essmedia.php?module=aktifitas_bulan"), timeout=20)
+        low_initial = r.text.lower()
+        if r.ok and "aktivitas harian tahun" in low_initial and "login area" not in low_initial:
+            self._persist()
+            return False
+        if not BeautifulSoup(r.text, "html.parser").find("form"):
+            r = self.http.get(BASE_URL, timeout=20)
         soup = BeautifulSoup(r.text, "html.parser")
         form = soup.find("form")
         if not form:
@@ -133,7 +141,7 @@ class EMasterClient:
         payload[user_field] = self.nip
         payload[pass_field] = self.password
         action = urljoin(r.url, form.get("action") or r.url)
-        out = self.http.post(action, data=payload, timeout=30, allow_redirects=True)
+        out = self.http.post(action, data=payload, timeout=20, allow_redirects=True)
         low = out.text.lower()
         if "two factor authentication" in low or "kode otp" in low or "index_mfa" in out.url:
             mfa_soup = BeautifulSoup(out.text, "html.parser")
