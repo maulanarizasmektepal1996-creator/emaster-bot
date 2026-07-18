@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from datetime import datetime, timedelta
@@ -127,10 +128,15 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         await update.callback_query.answer()
     client = get_client(update.effective_user.id)
-    if not client.is_authenticated():
-        await message.reply_text("🔐 Sesi belum aktif. Tekan Login terlebih dahulu.",
+    status = await message.reply_text("⏳ Menyiapkan formulir aktivitas…")
+    if not await asyncio.to_thread(client.is_authenticated):
+        await status.edit_text("🔐 Sesi belum aktif. Tekan Login terlebih dahulu.",
                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔐 Login", callback_data="menu:login")]]))
         return ConversationHandler.END
+    try:
+        await status.delete()
+    except Exception:
+        pass
     context.user_data.clear()
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📍 Hari Ini", callback_data="date:today"),
@@ -503,11 +509,13 @@ def main():
         entry_points=[CommandHandler("aktifkan", activate)],
         states={ACTIVATE_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, activate_password)]},
         fallbacks=[CommandHandler("batal", cancel)]))
-    app.add_handler(ConversationHandler(entry_points=[CommandHandler("login", login),
-                                                        CallbackQueryHandler(login, pattern=r"^menu:login$")],
-        states={OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, otp)]}, fallbacks=[CommandHandler("batal", cancel)]))
-    app.add_handler(ConversationHandler(entry_points=[CommandHandler("tambah", add),
-                                                        CallbackQueryHandler(add, pattern=r"^menu:add$")], states={
+    app.add_handler(ConversationHandler(
+        entry_points=[CommandHandler("login", login),
+                      CallbackQueryHandler(login, pattern=r"^menu:login$"),
+                      CommandHandler("tambah", add),
+                      CallbackQueryHandler(add, pattern=r"^menu:add$")],
+        states={
+        OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, otp)],
         DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_date),
                CallbackQueryHandler(quick_date, pattern=r"^date:")],
         TARGET: [CallbackQueryHandler(pick_target, pattern=r"^target:\d+$")],
@@ -516,7 +524,7 @@ def main():
         VOLUME: [MessageHandler(filters.TEXT & ~filters.COMMAND, volume)],
         OBJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, object_work)],
         CONFIRM: [CallbackQueryHandler(confirm, pattern=r"^(send|cancel)$")],
-    }, fallbacks=[CommandHandler("batal", cancel)]))
+    }, fallbacks=[CommandHandler("batal", cancel)], allow_reentry=True))
     app.add_handler(CommandHandler("progres", progress))
     app.add_handler(CommandHandler("dashboard", progress))
     app.add_handler(CommandHandler("riwayat", history))
