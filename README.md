@@ -13,6 +13,20 @@ Bot pribadi untuk mencari Kamus Aktivitas Disbudpar, menghitung WPT, meminta kon
 - Validasi H+7 dan maksimum 660 menit per aktivitas yang dikirim.
 - Konfirmasi sebelum data dikirim.
 - Progres mengambil total WPT terbaru langsung dari e‑Master, termasuk aktivitas yang diinput melalui situs.
+- Menu utama interaktif dengan tombol.
+- Pilihan tanggal cepat Hari Ini dan Kemarin.
+- Dashboard visual dengan progress bar, kekurangan WPT, dan estimasi hari.
+- Riwayat aktivitas yang dikirim melalui bot.
+- Tombol Tambah Lagi setelah aktivitas berhasil disimpan.
+
+## Perintah
+
+- `/start` — membuka menu utama.
+- `/login` — masuk atau memeriksa sesi e‑Master.
+- `/tambah` — menambahkan aktivitas.
+- `/dashboard` atau `/progres` — melihat WPT terbaru.
+- `/riwayat` — melihat aktivitas terakhir dari bot.
+- `/batal` — menghentikan proses pengisian.
 
 ## Catatan penting
 

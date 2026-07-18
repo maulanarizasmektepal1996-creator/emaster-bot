@@ -27,3 +27,6 @@ class Storage:
           FROM activities WHERE status='sent' AND substr(activity_date,4,7)=?""", (month_year,)).fetchone()
         return int(row[0]), int(row[1])
 
+    def recent(self, limit: int = 8):
+        return self.db.execute("""SELECT activity_date, activity, wpt, volume, object_work
+          FROM activities WHERE status='sent' ORDER BY id DESC LIMIT ?""", (limit,)).fetchall()
