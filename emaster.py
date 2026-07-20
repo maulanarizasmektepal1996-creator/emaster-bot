@@ -6,7 +6,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import urljoin
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -42,12 +42,37 @@ class WorkTarget:
     target_id: str
     informasi_id: str
     add_url: str
+    detail_url: str = ""
+
+
+@dataclass(frozen=True)
+class EMasterActivity:
+    id_realisasi: str
+    breakdown_id: str
+    month: str
+    date: str
+    detail: str
+    object_work: str
+    unit: str
+    wpt: int
+    volume: int
+    total_minutes: int
+    target_name: str
+    delete_url: str
+    detail_url: str
 
 
 @dataclass(frozen=True)
 class MonthProgress:
     activities: int
     minutes: int
+
+
+@dataclass(frozen=True)
+class EmployeeProfile:
+    name: str
+    nip: str
+    position: str
 
 
 def _normalize_search(value: str) -> str:
@@ -117,7 +142,7 @@ class EMasterClient:
         self.fernet = Fernet(encryption_key.encode())
         self.session_path = Path(session_path)
         self.http = requests.Session()
-        self.http.headers.update({"User-Agent": "Mozilla/5.0 EMasterPersonalTelegramBot/19.0"})
+        self.http.headers.update({"User-Agent": "Mozilla/5.0 EMasterPersonalTelegramBot/21.1.0"})
         self._restore()
 
     def _restore(self) -> None:
@@ -158,7 +183,14 @@ class EMasterClient:
                 continue
             if tag.get("type", "").lower() in {"checkbox", "radio"} and not tag.has_attr("checked"):
                 continue
-            payload[tag["name"]] = tag.get("value", "")
+            if tag.name == "textarea":
+                value = tag.get_text()
+            elif tag.name == "select":
+                selected = tag.select_one("option[selected]") or tag.select_one("option")
+                value = selected.get("value", selected.get_text(strip=True)) if selected else ""
+            else:
+                value = tag.get("value", "")
+            payload[tag["name"]] = value
         return payload
 
     def is_authenticated(self) -> bool:
@@ -212,6 +244,86 @@ class EMasterClient:
         if not self.is_authenticated():
             raise EMasterError("OTP ditolak atau sudah kedaluwarsa.")
         self._persist()
+
+    @staticmethod
+    def _parse_profile_html(html: str, fallback_nip: str) -> EmployeeProfile:
+        """Baca identitas secara defensif dari halaman Info Jabatan e-Master."""
+        soup = BeautifulSoup(html, "html.parser")
+        name = ""
+        welcome = soup.select_one(".welcome .note a, .welcome a")
+        if welcome:
+            name = welcome.get_text(" ", strip=True)
+        if not name:
+            heading = next((tag.get_text(" ", strip=True) for tag in soup.select("h1, h2, h3")
+                            if "aktivitas harian tahun" in tag.get_text(" ", strip=True).casefold()), "")
+            match = re.search(r"\s[-–]\s(?:detail\s[-–]\s)?(.+)$", heading, re.I)
+            name = match.group(1).strip() if match else ""
+
+        plain = soup.get_text(" ", strip=True)
+        nip_match = re.search(r"(?:NIP|Login)\s*:?\s*(\d{10,25})", plain, re.I)
+        nip = nip_match.group(1) if nip_match else fallback_nip
+
+        position = ""
+        accepted_labels = {
+            "jabatan", "nama jabatan", "namajabatan", "jabatan saat ini",
+            "nama jabatan saat ini", "jabatan sekarang", "jabatan aktif",
+            "jabatan definitif", "nomenklatur jabatan", "jabatan terakhir",
+        }
+        for row in soup.select("tr"):
+            cells = [cell.get_text(" ", strip=True) for cell in row.select("th, td")]
+            if len(cells) < 2:
+                continue
+            for index, cell in enumerate(cells[:-1]):
+                label = _normalize_search(cell).rstrip(" :")
+                if label not in accepted_labels:
+                    continue
+                candidate = next((value.strip() for value in cells[index + 1:]
+                                  if value.strip().strip(":-") and value.strip() != "0"), "")
+                if candidate and candidate not in {"-", "0"}:
+                    position = candidate
+                    break
+            if position:
+                break
+        if not position:
+            for label in soup.select("label"):
+                label_text = _normalize_search(label.get_text(" ", strip=True)).rstrip(" :")
+                if label_text not in accepted_labels:
+                    continue
+                target = soup.find(id=label.get("for")) if label.get("for") else None
+                if target:
+                    position = (target.get("value") or target.get_text(" ", strip=True)).strip()
+                    if position:
+                        break
+        if not position:
+            for field in soup.select("input[name], textarea[name], select[name]"):
+                field_name = _normalize_search(field.get("name", "")).replace("_", " ")
+                if field_name not in accepted_labels:
+                    continue
+                if field.name == "select":
+                    selected = field.select_one("option[selected]") or field.select_one("option")
+                    position = selected.get_text(" ", strip=True) if selected else ""
+                else:
+                    position = (field.get("value") or field.get_text(" ", strip=True)).strip()
+                if position:
+                    break
+        return EmployeeProfile(name=name, nip=nip, position=position)
+
+    def get_profile(self) -> EmployeeProfile:
+        """Ambil nama, NIP, dan jabatan dari akun yang sedang login."""
+        try:
+            response = self.http.get(
+                urljoin(BASE_URL, "essmedia.php"), params={"module": "jabatan"}, timeout=30)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise EMasterError("Profil pegawai e-Master belum dapat dibuka.") from exc
+        if "login area" in response.text.casefold() or "index_mfa" in response.url:
+            raise AuthenticationRequired("Sesi e-Master habis.")
+        profile = self._parse_profile_html(response.text, self.nip)
+        if not profile.name:
+            # Halaman Info Jabatan dapat berubah, tetapi NIP akun tetap diketahui
+            # dari kredensial pegawai dan aman digunakan sebagai fallback.
+            profile = EmployeeProfile(name="", nip=self.nip, position=profile.position)
+        return profile
 
     @staticmethod
     def _parse_kamus_html(html: str) -> list[KamusItem]:
@@ -268,25 +380,271 @@ class EMasterClient:
         found = filter_catalog(merged.values(), keyword)
         return found[:limit] if limit is not None else found
 
-    def list_work_targets(self, month: str) -> list[WorkTarget]:
-        """Read every personal Kegiatan Tugas Jabatan and its hidden IDs."""
-        if not self.is_authenticated():
-            raise AuthenticationRequired("Sesi e-Master habis.")
-        page = self.http.get(urljoin(BASE_URL, "essmedia.php"),
-                             params={"module": "aktifitas_bulan", "bulan": month}, timeout=30)
+    def _work_target_detail_links(self, month: str) -> list[str]:
+        try:
+            page = self.http.get(urljoin(BASE_URL, "essmedia.php"),
+                                 params={"module": "aktifitas_bulan", "bulan": month}, timeout=30)
+            page.raise_for_status()
+        except requests.RequestException as exc:
+            raise EMasterError("Daftar tugas e-Master tidak dapat dibuka.") from exc
         soup = BeautifulSoup(page.text, "html.parser")
         links: list[str] = []
-        for a in soup.select("a[href]"):
-            href = a.get("href", "")
+        for anchor in soup.select("a[href]"):
+            href = anchor.get("href", "")
             if "module=aktifitas_bulan" in href and "act=realisasi" in href and "id_breakdown=" in href:
                 links.append(urljoin(page.url, href))
-        # e-Master versi lama menggunakan onclick pada tombol bergambar kunci,
-        # bukan elemen <a>. Ambil URL dari JavaScript sederhana tersebut.
         for tag in soup.select("[onclick]"):
             onclick = tag.get("onclick", "")
             match = re.search(r"(?:href|location)(?:\.href)?\s*=\s*['\"]([^'\"]+act=realisasi[^'\"]+)['\"]", onclick)
             if match and "id_breakdown=" in match.group(1):
                 links.append(urljoin(page.url, match.group(1)))
+        # Pertahankan urutan halaman sambil membuang duplikat.
+        unique = list(dict.fromkeys(links))
+        return [link for link in unique if self._is_valid_detail_url(link)]
+
+    @staticmethod
+    def _is_valid_detail_url(url: str) -> bool:
+        try:
+            parsed = urlsplit(url)
+            query = parse_qs(parsed.query)
+            port = parsed.port
+        except ValueError:
+            return False
+        return (parsed.scheme == "https"
+                and parsed.hostname == "master.bkd.jatimprov.go.id"
+                and not parsed.username and not parsed.password and port in (None, 443)
+                and parsed.path == "/essmedia.php"
+                and query.get("module") == ["aktifitas_bulan"]
+                and query.get("act") == ["realisasi"]
+                and bool(re.fullmatch(r"[a-fA-F0-9]{32}", (query.get("id_breakdown") or [""])[0])))
+
+    @staticmethod
+    def _target_name_from_detail(soup: BeautifulSoup) -> str:
+        form = next((f for f in soup.find_all("form") if f.select_one('[name="breakdown_id"]')), None)
+        target_table = form.select_one("table") if form else None
+        if target_table:
+            for row in target_table.select("tbody tr"):
+                cells = [cell.get_text(" ", strip=True) for cell in row.select("td")]
+                if len(cells) >= 3 and cells[0].isdigit():
+                    return cells[2]
+        return ""
+
+    @staticmethod
+    def _parse_activity_detail(html: str, detail_url: str, target_name: str = "") -> list[EMasterActivity]:
+        soup = BeautifulSoup(html, "html.parser")
+        activities: list[EMasterActivity] = []
+        for row in soup.select("tr"):
+            delete_anchor = next((anchor for anchor in row.select("a[href]")
+                                  if "act=delete" in anchor.get("href", "")
+                                  and "id_realisasi=" in anchor.get("href", "")), None)
+            if not delete_anchor:
+                continue
+            delete_url = urljoin(detail_url, delete_anchor.get("href", ""))
+            query = parse_qs(urlsplit(delete_url).query)
+            realization_id = (query.get("id_realisasi") or [""])[0]
+            breakdown_id = (query.get("id_breakdown") or [""])[0]
+            month = (query.get("bulan") or [""])[0]
+            cells = [cell.get_text(" ", strip=True) for cell in row.select("td")]
+            if len(cells) < 9 or not realization_id:
+                continue
+            try:
+                wpt = int(re.sub(r"\D", "", cells[6]))
+                volume = int(re.sub(r"\D", "", cells[7]))
+                total = int(re.sub(r"\D", "", cells[8]))
+            except ValueError:
+                continue
+            activities.append(EMasterActivity(
+                id_realisasi=realization_id,
+                breakdown_id=breakdown_id,
+                month=month,
+                date=cells[2],
+                detail=cells[3],
+                object_work=cells[4],
+                unit=cells[5],
+                wpt=wpt,
+                volume=volume,
+                total_minutes=total,
+                target_name=target_name,
+                delete_url=delete_url,
+                detail_url=detail_url,
+            ))
+        return activities
+
+    def list_activities(self, month: str, limit: int | None = None) -> list[EMasterActivity]:
+        """Ambil riwayat live milik pegawai beserta URL hapus yang diterbitkan e-Master."""
+        if not self.is_authenticated():
+            raise AuthenticationRequired("Sesi e-Master habis.")
+        activities: list[EMasterActivity] = []
+        for detail_url in self._work_target_detail_links(month):
+            try:
+                response = self.http.get(detail_url, timeout=30)
+                response.raise_for_status()
+            except requests.RequestException as exc:
+                raise EMasterError("Riwayat aktivitas e-Master tidak dapat dibuka.") from exc
+            if not response.ok or "login area" in response.text.casefold():
+                raise AuthenticationRequired("Sesi e-Master habis.")
+            soup = BeautifulSoup(response.text, "html.parser")
+            target_name = self._target_name_from_detail(soup)
+            activities.extend(self._parse_activity_detail(response.text, detail_url, target_name))
+        activities.sort(key=lambda item: int(item.id_realisasi) if item.id_realisasi.isdigit() else 0,
+                        reverse=True)
+        return activities[:max(1, min(limit, 200))] if limit is not None else activities
+
+    @staticmethod
+    def _validate_delete_url(activity: EMasterActivity) -> None:
+        try:
+            parsed = urlsplit(activity.delete_url)
+            port = parsed.port
+        except ValueError as exc:
+            raise EMasterError("Tautan hapus e-Master tidak valid.") from exc
+        query = parse_qs(parsed.query)
+        detail_query = parse_qs(urlsplit(activity.detail_url).query)
+        allowed_keys = {"module", "act", "bulan", "id_breakdown", "id_realisasi"}
+        if (parsed.scheme != "https" or parsed.hostname != "master.bkd.jatimprov.go.id"
+                or parsed.username or parsed.password or port not in (None, 443)
+                or parsed.path != "/modul_essmankin/mod_aktifitas_bulan/aksi_aktifitas_bulan.php"
+                or set(query) != allowed_keys
+                or query.get("module") != ["aktifitas_bulan"]
+                or query.get("act") != ["delete"]
+                or query.get("bulan") != [activity.month]
+                or query.get("id_breakdown") != [activity.breakdown_id]
+                or query.get("id_realisasi") != [activity.id_realisasi]
+                or not re.fullmatch(r"(?:0[1-9]|1[0-2])", activity.month)
+                or not re.fullmatch(r"[a-fA-F0-9]{32}", activity.breakdown_id)
+                or not re.fullmatch(r"\d+", activity.id_realisasi)
+                or not EMasterClient._is_valid_detail_url(activity.detail_url)
+                or detail_query.get("id_breakdown") != [activity.breakdown_id]
+                or detail_query.get("bulan") != [activity.month]):
+            raise EMasterError("Tautan hapus e-Master tidak valid.")
+
+    def delete_activity(self, activity: EMasterActivity) -> None:
+        """Hapus satu aktivitas yang dipilih dari halaman akun aktif, lalu verifikasi hasilnya."""
+        self._validate_delete_url(activity)
+        if not self.is_authenticated():
+            raise AuthenticationRequired("Sesi e-Master habis.")
+        try:
+            response = self.http.get(activity.delete_url, timeout=30, allow_redirects=True)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise EMasterError("Permintaan hapus ke e-Master gagal.") from exc
+        if not response.ok or "login area" in response.text.casefold():
+            raise AuthenticationRequired("Sesi e-Master habis.")
+        try:
+            verify = self.http.get(activity.detail_url, timeout=30,
+                                   headers={"Cache-Control": "no-cache"})
+            verify.raise_for_status()
+        except requests.RequestException as exc:
+            raise EMasterError("Penghapusan tidak dapat diverifikasi.") from exc
+        if "login area" in verify.text.casefold():
+            raise AuthenticationRequired("Sesi e-Master habis.")
+        if not verify.ok:
+            raise EMasterError("Penghapusan tidak dapat diverifikasi.")
+        if re.search(rf"[?&]id_realisasi={re.escape(activity.id_realisasi)}(?:[&'\"\s>]|$)", verify.text):
+            raise EMasterError("e-Master belum menghapus aktivitas tersebut.")
+        self._persist()
+
+    @staticmethod
+    def _edit_url(activity: EMasterActivity) -> str:
+        return urljoin(BASE_URL, "essmedia.php") + (
+            "?module=aktifitas_bulan&act=editaktifitas"
+            f"&bulan={activity.month}&id_breakdown={activity.breakdown_id}"
+            f"&id_realisasi={activity.id_realisasi}")
+
+    @staticmethod
+    def _validate_edit_action(url: str) -> None:
+        try:
+            parsed = urlsplit(url)
+            query = parse_qs(parsed.query)
+            port = parsed.port
+        except ValueError as exc:
+            raise EMasterError("Form edit e-Master tidak valid.") from exc
+        action = (query.get("act") or [""])[0].casefold()
+        if (parsed.scheme != "https" or parsed.hostname != "master.bkd.jatimprov.go.id"
+                or parsed.username or parsed.password or port not in (None, 443)
+                or parsed.path != "/modul_essmankin/mod_aktifitas_bulan/aksi_aktifitas_bulan.php"
+                or query.get("module") != ["aktifitas_bulan"]
+                or not re.fullmatch(r"(?:update|edit|updateaktifitas|editaktifitas)", action)):
+            raise EMasterError("Tujuan form edit e-Master berubah; pembaruan dibatalkan demi keamanan.")
+
+    def update_activity(self, activity: EMasterActivity, *, date: str, volume: int,
+                        object_work: str, item: KamusItem | None = None) -> EMasterActivity:
+        """Perbarui aktivitas melalui form edit resmi dan verifikasi baris yang sama."""
+        self._validate_delete_url(activity)
+        if not self.is_authenticated():
+            raise AuthenticationRequired("Sesi e-Master habis.")
+        edit_url = self._edit_url(activity)
+        try:
+            page = self.http.get(edit_url, timeout=30)
+            page.raise_for_status()
+        except requests.RequestException as exc:
+            raise EMasterError("Form edit aktivitas tidak dapat dibuka.") from exc
+        if "login area" in page.text.casefold():
+            raise AuthenticationRequired("Sesi e-Master habis.")
+        soup = BeautifulSoup(page.text, "html.parser")
+        form = next((candidate for candidate in soup.find_all("form")
+                     if _find_field(candidate, ("tgl_kegiatan", "tanggal"))
+                     and _find_field(candidate, ("volume",))
+                     and _find_field(candidate, ("objek_kerja", "objek"))), None)
+        if not form:
+            raise EMasterError("Form edit aktivitas e-Master tidak ditemukan.")
+        payload = self._form_payload(form)
+        date_field = _find_field(form, ("tgl_kegiatan", "tanggal"))
+        volume_field = _find_field(form, ("volume",))
+        object_field = _find_field(form, ("objek_kerja", "objek"))
+        if not date_field or not volume_field or not object_field:
+            raise EMasterError("Field edit aktivitas e-Master berubah.")
+        payload[date_field] = date
+        payload[volume_field] = str(volume)
+        payload[object_field] = object_work
+        if item is not None:
+            activity_field = _find_field(form, ("rk", "aktifitas", "aktivitas"))
+            unit_field = _find_field(form, ("satuan",))
+            wpt_field = _find_field(form, ("wpt",))
+            if not activity_field or not unit_field or not wpt_field:
+                raise EMasterError("Field kamus pada form edit e-Master berubah.")
+            payload[activity_field] = f"{item.code}-{item.activity}"
+            payload[unit_field] = item.unit
+            payload[wpt_field] = str(item.wpt)
+        realization_field = _find_field(form, ("id_realisasi", "realisasi_id"))
+        if realization_field:
+            payload[realization_field] = activity.id_realisasi
+        action_url = urljoin(page.url, form.get("action") or "")
+        self._validate_edit_action(action_url)
+        multipart = {name: (None, str(value)) for name, value in payload.items()}
+        try:
+            response = self.http.post(action_url, files=multipart, timeout=30, allow_redirects=True)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise EMasterError("Perubahan aktivitas gagal dikirim ke e-Master.") from exc
+        if "login area" in response.text.casefold():
+            raise AuthenticationRequired("Sesi e-Master habis.")
+        try:
+            verify = self.http.get(activity.detail_url, timeout=30,
+                                   headers={"Cache-Control": "no-cache"})
+            verify.raise_for_status()
+        except requests.RequestException as exc:
+            raise EMasterError("Perubahan aktivitas tidak dapat diverifikasi.") from exc
+        if "login area" in verify.text.casefold():
+            raise AuthenticationRequired("Sesi e-Master habis.")
+        updated = next((row for row in self._parse_activity_detail(
+            verify.text, activity.detail_url, activity.target_name)
+                        if row.id_realisasi == activity.id_realisasi), None)
+        expected_wpt = item.wpt if item is not None else activity.wpt
+        expected_detail = item.activity if item is not None else activity.detail
+        normalized_date = date.replace("/", "-")
+        if (not updated or updated.date.replace("/", "-") != normalized_date
+                or updated.volume != volume or updated.wpt != expected_wpt
+                or _normalize_search(updated.object_work) != _normalize_search(object_work)
+                or _normalize_search(updated.detail) != _normalize_search(expected_detail)):
+            raise EMasterError("e-Master belum mengonfirmasi seluruh perubahan aktivitas.")
+        self._persist()
+        return updated
+
+    def list_work_targets(self, month: str) -> list[WorkTarget]:
+        """Read every personal Kegiatan Tugas Jabatan and its hidden IDs."""
+        if not self.is_authenticated():
+            raise AuthenticationRequired("Sesi e-Master habis.")
+        links = self._work_target_detail_links(month)
         targets: list[WorkTarget] = []
         seen: set[str] = set()
         for detail_url in links:
@@ -308,18 +666,10 @@ class EMasterClient:
             if not form:
                 continue
             values = self._form_payload(form)
-            target_name = ""
-            target_table = form.select_one("table")
-            if target_table:
-                rows = target_table.select("tbody tr")
-                for row in rows:
-                    cells = [x.get_text(" ", strip=True) for x in row.select("td")]
-                    if len(cells) >= 3 and cells[0].isdigit():
-                        target_name = cells[2]
-                        break
+            target_name = self._target_name_from_detail(dsoup)
             if all(values.get(k) for k in ("breakdown_id", "target_id", "informasi_id")):
                 targets.append(WorkTarget(target_name, values["breakdown_id"], values["target_id"],
-                                          values["informasi_id"], add_link))
+                                          values["informasi_id"], add_link, detail_url))
         return targets
 
     def get_month_progress(self, month: str) -> MonthProgress:
