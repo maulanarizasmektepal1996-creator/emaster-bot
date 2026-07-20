@@ -15,21 +15,13 @@ Bot admin-terkelola untuk mencari Kamus Aktivitas Disbudpar, menghitung WPT, mem
 - Pagination hasil pencarian: semua hasil dapat dibuka tanpa batas delapan tombol.
 - Mengambil semua Kegiatan Tugas Jabatan secara otomatis dan menampilkannya sebagai pilihan.
 - Satuan dan WPT otomatis mengikuti kamus.
-- Validasi H+7, larangan tanggal mendatang, dan maksimum total 660 menit per hari.
-- Pemeriksaan duplikat berdasarkan tanggal, aktivitas, dan objek kerja sebelum dikirim.
+- Validasi H+7 dan maksimum 660 menit per aktivitas yang dikirim.
 - Konfirmasi sebelum data dikirim.
 - Progres mengambil total WPT terbaru langsung dari e‑Master, termasuk aktivitas yang diinput melalui situs.
 - Menu utama interaktif dengan tombol.
 - Pilihan tanggal cepat Hari Ini dan Kemarin.
 - Dashboard visual dengan progress bar, kekurangan WPT, dan estimasi hari.
 - Riwayat aktivitas yang dikirim melalui bot.
-- Riwayat live dari e‑Master, termasuk aktivitas yang dibuat lewat situs, dengan pagination agar seluruh aktivitas bulan berjalan dapat dipilih.
-- Edit tanggal, aktivitas kamus, volume, dan objek kerja melalui form resmi e‑Master; hasil selalu diverifikasi pada ID realisasi yang sama.
-- Salin aktivitas lama ke tanggal baru dengan penyesuaian tugas jabatan dan WPT kamus terbaru.
-- Hapus aktivitas langsung dari e‑Master dengan konfirmasi dua langkah dan verifikasi setelah penghapusan.
-- Aktivitas favorit per pegawai untuk mempercepat pengisian berulang.
-- Draf tersimpan per pegawai dan dapat dilanjutkan setelah login OTP atau sesi kedaluwarsa.
-- Semua callback lama selalu diberi respons agar tombol kedaluwarsa tidak terlihat macet.
 - Tombol Tambah Lagi setelah aktivitas berhasil disimpan.
 
 ## Perintah
@@ -38,7 +30,7 @@ Bot admin-terkelola untuk mencari Kamus Aktivitas Disbudpar, menghitung WPT, mem
 - `/login` — masuk atau memeriksa sesi e‑Master.
 - `/tambah` — menambahkan aktivitas.
 - `/dashboard` atau `/progres` — melihat WPT terbaru.
-- `/riwayat` — melihat aktivitas terbaru di e‑Master, lalu Edit, Salin, atau Hapus.
+- `/riwayat` — melihat aktivitas terakhir dari bot.
 - `/batal` — menghentikan proses pengisian.
 - `/tambahpegawai` — admin mendaftarkan pegawai.
 - `/aktifkan` — pegawai melengkapi password setelah diundang admin.
@@ -62,11 +54,6 @@ Jangan membagikan akun Telegram. Admin tidak dapat melihat password asli pegawai
 - Database dan file sesi menggunakan izin file privat pada container.
 - Sesi, tugas jabatan, dashboard, dan riwayat dipisahkan berdasarkan Telegram ID.
 - Menonaktifkan atau mendaftarkan ulang pegawai membersihkan cache dan sesi lamanya.
-- Tombol hapus tidak menerima URL/ID bebas: bot hanya menggunakan ID aktivitas dari halaman akun e‑Master yang sedang login.
-- Setiap penghapusan memerlukan konfirmasi kedua, diverifikasi ke halaman e‑Master, dan dicatat dalam audit database lokal.
-- Edit hanya menggunakan form resmi pada domain e‑Master, terikat ke ID realisasi pilihan, diperiksa ulang terhadap batas WPT, lalu diverifikasi dari halaman detail.
-- Draf tidak menyimpan password, OTP, atau cookie; hanya isian aktivitas dan ID tugas yang dibutuhkan untuk melanjutkan formulir.
-- Favorit, draf, riwayat, dan audit selalu dipisahkan berdasarkan Telegram ID.
 - Jangan menyalakan log debug atau membagikan Railway Logs yang mungkin memuat konteks teknis.
 
 ## Catatan penting
@@ -119,9 +106,6 @@ e‑Master kedaluwarsa, bot akan membersihkan cookie lama secara otomatis saat
 4. Tidak perlu mengisi ulang `EMASTER_BREAKDOWN_ID`, `EMASTER_TARGET_ID`, atau hash tugas; versi ini mengambil tugas jabatan setiap pegawai langsung dari e‑Master.
 5. Setelah deploy, setiap pegawai menjalankan `/login` dan memasukkan OTP baru.
 6. Uji `/tambah`, cari `surat`, dan pastikan tertulis **10 hasil** dengan tombol **Berikutnya** untuk halaman kedua.
-7. Uji `/riwayat`; setiap aktivitas harus memiliki tombol **Edit**, **Salin**, dan **Hapus**.
-8. Uji draf dengan menghentikan pengisian di tengah, lalu tekan **Lanjutkan Draft**.
-9. Sebelum dipakai bersama, lakukan satu uji Edit dan Hapus pada data uji yang benar, kemudian cocokkan hasilnya di situs e‑Master.
 
 ## Menjalankan lokal
 
