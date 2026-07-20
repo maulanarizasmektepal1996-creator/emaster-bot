@@ -71,14 +71,22 @@ def normalize_text(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
 
 
+def current_activity_period() -> tuple[datetime, datetime]:
+    first = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if first.month == 12:
+        next_month = first.replace(year=first.year + 1, month=1)
+    else:
+        next_month = first.replace(month=first.month + 1)
+    return first, next_month - timedelta(days=1)
+
+
 def parse_activity_date(value: str) -> datetime:
-    """Parse tanggal dan terapkan aturan input yang sama untuk tambah/edit/salin."""
+    """Terima seluruh tanggal pada bulan berjalan, termasuk tanggal mendatang."""
     date = datetime.strptime(value.strip().replace("-", "/"), "%d/%m/%Y")
-    today = datetime.now().date()
-    if date.date() > today:
-        raise ValueError("Tanggal aktivitas tidak boleh melebihi hari ini.")
-    if (today - date.date()).days > 7:
-        raise ValueError("Tanggal aktivitas melewati batas H+7.")
+    first, last = current_activity_period()
+    if not first.date() <= date.date() <= last.date():
+        raise ValueError(
+            f"Tanggal harus berada dalam periode {first:%d/%m/%Y}–{last:%d/%m/%Y}.")
     return date
 
 
@@ -235,7 +243,7 @@ async def otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     code = update.message.text.strip()
     try:
         await update.message.delete()
-    except sqlite3.DatabaseError:
+    except Exception:
         logging.warning("Pesan OTP tidak dapat dihapus otomatis; tidak ada isi OTP yang dicatat")
     try:
         client = get_client(update.effective_user.id)
@@ -276,13 +284,20 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.debug("Pesan status formulir tidak dapat dihapus")
     context.user_data.clear()
     storage.delete_draft(update.effective_user.id)
+    first, last = current_activity_period()
+    quick_buttons = [InlineKeyboardButton("📍 Hari Ini", callback_data="date:today")]
+    if datetime.now().day > 1:
+        quick_buttons.append(InlineKeyboardButton("↩️ Kemarin", callback_data="date:yesterday"))
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📍 Hari Ini", callback_data="date:today"),
-         InlineKeyboardButton("↩️ Kemarin", callback_data="date:yesterday")],
+        quick_buttons,
         [InlineKeyboardButton("❌ Batal", callback_data="date:cancel")]
     ])
-    await message.reply_text("📅 *PILIH TANGGAL AKTIVITAS*\n\nPilih tombol cepat atau ketik DD/MM/YYYY.",
-                             parse_mode="Markdown", reply_markup=kb)
+    await message.reply_text(
+        f"📅 *PILIH TANGGAL AKTIVITAS*\n\n"
+        f"Periode aktif: *{first:%d/%m/%Y}–{last:%d/%m/%Y}*.\n"
+        "Tanggal sebelum maupun sesudah hari ini diperbolehkan selama masih dalam bulan tersebut.\n\n"
+        "Pilih tombol cepat atau ketik DD/MM/YYYY.",
+        parse_mode="Markdown", reply_markup=kb)
     return DATE
 
 
@@ -314,7 +329,7 @@ async def resume_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
         storage.delete_draft(update.effective_user.id)
         context.user_data.clear()
         await message.reply_text(
-            "⚠️ Tanggal draft sudah melewati batas H+7. Mulai aktivitas baru.",
+            "⚠️ Tanggal draft berada di luar bulan berjalan. Mulai aktivitas baru.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
                 "🆕 Mulai Baru", callback_data="menu:newadd")]]))
         return ConversationHandler.END
@@ -368,6 +383,11 @@ async def quick_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Pengisian dibatalkan.")
         return ConversationHandler.END
     date = datetime.now() if action == "today" else datetime.now() - timedelta(days=1)
+    try:
+        date = parse_activity_date(date.strftime("%d/%m/%Y"))
+    except ValueError as exc:
+        await query.edit_message_text(f"⚠️ {exc}\nKetik tanggal lain dalam format DD/MM/YYYY.")
+        return DATE
     await query.edit_message_text(f"📅 Tanggal dipilih: *{date:%d/%m/%Y}*", parse_mode="Markdown")
     return await load_targets(update, context, date)
 
@@ -419,7 +439,7 @@ async def pick_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def prompt_activity_search(message, telegram_id: int):
     try:
         favorites = storage.list_favorites(telegram_id, 5)
-    except Exception:
+    except sqlite3.DatabaseError:
         # Favorit adalah pintasan opsional. Kerusakan/migrasi data lama tidak
         # boleh menghentikan alur inti Tambah Aktivitas.
         logging.exception("Favorit belum dapat dibaca; alur pencarian tetap dilanjutkan")

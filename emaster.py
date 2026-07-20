@@ -142,7 +142,7 @@ class EMasterClient:
         self.fernet = Fernet(encryption_key.encode())
         self.session_path = Path(session_path)
         self.http = requests.Session()
-        self.http.headers.update({"User-Agent": "Mozilla/5.0 EMasterPersonalTelegramBot/21.1.0"})
+        self.http.headers.update({"User-Agent": "Mozilla/5.0 EMasterPersonalTelegramBot/21.2.0"})
         self._restore()
 
     def _restore(self) -> None:

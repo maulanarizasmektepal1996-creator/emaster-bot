@@ -1,3 +1,12 @@
+# Versi 21.2.0 - Tanggal Satu Bulan Penuh
+
+- Mengizinkan aktivitas pada seluruh tanggal bulan berjalan, dari tanggal 1 sampai hari terakhir.
+- Tanggal mendatang dalam bulan yang sama sekarang diperbolehkan.
+- Tanggal sebelumnya tidak lagi dibatasi H+7 selama masih berada pada bulan berjalan.
+- Aturan yang sama berlaku untuk Tambah, Edit, Salin Aktivitas, dan Lanjutkan Draft.
+- Tanggal di luar bulan berjalan tetap ditolak untuk mencegah salah periode.
+- Pilihan tanggal sekarang menampilkan rentang bulan aktif secara jelas.
+
 # Versi 21.1.0 - Profil Pegawai di Halaman Depan
 
 - Menampilkan nama pegawai, NIP, dan jabatan pada kartu halaman depan setelah login.

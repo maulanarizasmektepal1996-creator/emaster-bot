@@ -339,6 +339,16 @@ class AddFlowTests(unittest.TestCase):
         self.assertIn("NIP: 198501012010012001", text)
         self.assertIn("Jabatan: Pranata Hubungan Masyarakat Ahli Pertama", text)
 
+    def test_full_current_month_is_allowed_including_future_dates(self):
+        import main
+        first, last = main.current_activity_period()
+        self.assertEqual(first.date(), main.parse_activity_date(first.strftime("%d/%m/%Y")).date())
+        self.assertEqual(last.date(), main.parse_activity_date(last.strftime("%d/%m/%Y")).date())
+        with self.assertRaises(ValueError):
+            main.parse_activity_date((first - main.timedelta(days=1)).strftime("%d/%m/%Y"))
+        with self.assertRaises(ValueError):
+            main.parse_activity_date((last + main.timedelta(days=1)).strftime("%d/%m/%Y"))
+
 
 if __name__ == "__main__":
     unittest.main()

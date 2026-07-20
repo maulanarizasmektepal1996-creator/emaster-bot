@@ -17,7 +17,8 @@ Bot admin-terkelola untuk mencari Kamus Aktivitas Disbudpar, menghitung WPT, mem
 - Pagination hasil pencarian: semua hasil dapat dibuka tanpa batas delapan tombol.
 - Mengambil semua Kegiatan Tugas Jabatan secara otomatis dan menampilkannya sebagai pilihan.
 - Satuan dan WPT otomatis mengikuti kamus.
-- Validasi H+7, larangan tanggal mendatang, dan maksimum total 660 menit per hari.
+- Seluruh tanggal bulan berjalan dapat dipilih, termasuk tanggal sebelum dan sesudah hari ini; tanggal di luar bulan aktif ditolak.
+- Validasi maksimum total 660 menit per hari.
 - Pemeriksaan duplikat berdasarkan tanggal, aktivitas, dan objek kerja sebelum dikirim.
 - Konfirmasi sebelum data dikirim.
 - Progres mengambil total WPT terbaru langsung dari e‑Master, termasuk aktivitas yang diinput melalui situs.
