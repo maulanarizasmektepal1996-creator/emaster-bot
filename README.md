@@ -11,7 +11,8 @@ Bot admin-terkelola untuk mencari Kamus Aktivitas Disbudpar, menghitung WPT, mem
 - Login NIP/password dan OTP Google Authenticator saat sesi berakhir.
 - Setiap pegawai yang menjalankan `/login` selalu memulai sesi baru dan wajib memasukkan OTP miliknya.
 - Cookie sesi disimpan terenkripsi.
-- Pencarian Kamus Aktivitas langsung dari e‑Master.
+- Pencarian Kamus Aktivitas lengkap dari e‑Master dengan jaring pengaman 72 aktivitas terverifikasi dari PDF BKD terbaru.
+- Pagination hasil pencarian: semua hasil dapat dibuka tanpa batas delapan tombol.
 - Mengambil semua Kegiatan Tugas Jabatan secara otomatis dan menampilkannya sebagai pilihan.
 - Satuan dan WPT otomatis mengikuti kamus.
 - Validasi H+7 dan maksimum 660 menit per aktivitas yang dikirim.
@@ -45,9 +46,27 @@ Bot admin-terkelola untuk mencari Kamus Aktivitas Disbudpar, menghitung WPT, mem
 
 Jangan membagikan akun Telegram. Admin tidak dapat melihat password asli pegawai melalui menu bot.
 
+## Keamanan
+
+- Gunakan repository GitHub privat dan batasi akses proyek Railway.
+- `ENCRYPTION_KEY` harus dibuat sekali, disimpan sebagai Railway Variable, dan tidak dibagikan.
+- Password serta cookie sesi disimpan menggunakan enkripsi Fernet; pesan password dan OTP dihapus setelah diterima bot.
+- Database dan file sesi menggunakan izin file privat pada container.
+- Sesi, tugas jabatan, dashboard, dan riwayat dipisahkan berdasarkan Telegram ID.
+- Menonaktifkan atau mendaftarkan ulang pegawai membersihkan cache dan sesi lamanya.
+- Jangan menyalakan log debug atau membagikan Railway Logs yang mungkin memuat konteks teknis.
+
 ## Catatan penting
 
 Ini konektor tidak resmi dan hanya boleh dipakai untuk akun sendiri dengan izin instansi. Perubahan halaman e‑Master dapat membuat login atau pengiriman perlu diperbarui. Selalu periksa aktivitas yang masuk sebelum laporan bulanan dikunci/dikirim.
+
+## Kamus aktivitas
+
+File `kamus_aktivitas.json` memuat 72 aktivitas dari **KAMUS KINERJA BIDANG PEMASARAN DAN KELEMBAGAAN PAREKRAF - KAMUS BKD**, versi 18 Juli 2026. Bot menggabungkannya dengan hasil live e‑Master agar item tidak hilang akibat batas tampilan atau pagination popup.
+
+Pencarian dilakukan pada nama aktivitas. Contoh `surat` menghasilkan 10 aktivitas (kode 19, 20, 21, 27, 28, 40, 50, 51, 59, dan 65). Bot menampilkan delapan item per halaman; tekan **Berikutnya** untuk melihat sisanya.
+
+Untuk memperbarui kamus di kemudian hari, ganti isi `kamus_aktivitas.json` dengan daftar yang sudah disahkan dan pertahankan struktur `code`, `activity`, `unit`, `wpt`, serta `object_hint`.
 
 ## Menyiapkan bot Telegram
 
@@ -78,6 +97,15 @@ e‑Master kedaluwarsa, bot akan membersihkan cookie lama secara otomatis saat
 6. Buka Telegram: `/start`, kemudian `/login`.
 7. Saat diminta, kirim OTP 6 digit. Pesan OTP akan berusaha dihapus segera setelah diproses.
 8. Jalankan `/tambah` untuk uji satu aktivitas.
+
+## Memperbarui dari versi sebelumnya
+
+1. Simpan nilai Railway Variables dan pastikan Volume `/data` tetap terpasang.
+2. Ganti kode proyek dengan isi paket versi terbaru, lalu deploy ulang.
+3. **Jangan membuat atau mengganti `ENCRYPTION_KEY`.** Kunci lama diperlukan untuk membuka password pegawai yang sudah tersimpan.
+4. Tidak perlu mengisi ulang `EMASTER_BREAKDOWN_ID`, `EMASTER_TARGET_ID`, atau hash tugas; versi ini mengambil tugas jabatan setiap pegawai langsung dari e‑Master.
+5. Setelah deploy, setiap pegawai menjalankan `/login` dan memasukkan OTP baru.
+6. Uji `/tambah`, cari `surat`, dan pastikan tertulis **10 hasil** dengan tombol **Berikutnya** untuk halaman kedua.
 
 ## Menjalankan lokal
 

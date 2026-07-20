@@ -6,7 +6,7 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
@@ -29,18 +29,33 @@ clients: dict[int, EMasterClient] = {}
 session_dir = Path(os.getenv("SESSION_PATH", "/data/emaster_session.bin")).parent / "sessions"
 
 
+def clear_cached_user(telegram_id: int) -> None:
+    clients.pop(telegram_id, None)
+    path = Path(os.getenv("SESSION_PATH", "/data/emaster_session.bin")) if telegram_id == OWNER else session_dir / f"{telegram_id}.bin"
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def get_client(telegram_id: int) -> EMasterClient:
     user = storage.get_user(telegram_id)
     if not user or user[4] != "active" or not user[2]:
         raise EMasterError("Akun belum aktif.")
     if telegram_id not in clients:
-        password = fernet.decrypt(user[2].encode()).decode()
+        try:
+            password = fernet.decrypt(user[2].encode()).decode()
+        except InvalidToken as exc:
+            raise EMasterError(
+                "Data login tidak dapat dibuka. ENCRYPTION_KEY kemungkinan berubah. "
+                "Admin perlu mendaftarkan ulang akun ini.") from exc
         session_path = os.getenv("SESSION_PATH", "/data/emaster_session.bin") if telegram_id == OWNER else str(session_dir / f"{telegram_id}.bin")
         clients[telegram_id] = EMasterClient(user[1], password, os.environ["ENCRYPTION_KEY"],
                                              session_path)
     return clients[telegram_id]
 
 DATE, TARGET, SEARCH, PICK, VOLUME, OBJECT, CONFIRM, OTP, ADMIN_TGID, ADMIN_NIP, ADMIN_NAME, ACTIVATE_PASSWORD = range(12)
+KAMUS_PAGE_SIZE = 8
 
 
 def private(fn):
@@ -94,7 +109,7 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Setiap perintah /login wajib membuat sesi baru dan meminta OTP.
         # Sesi milik pegawai lain tidak terpengaruh.
         client.reset_session()
-        needs_otp = client.begin_login()
+        needs_otp = await asyncio.to_thread(client.begin_login)
         if needs_otp:
             await status.edit_text("🔐 *VERIFIKASI OTP*\n\nMasukkan 6 digit kode Google Authenticator.\nPesan OTP akan otomatis dihapus.", parse_mode="Markdown")
             return OTP
@@ -110,10 +125,10 @@ async def otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await update.message.delete()
     except Exception:
-        pass
+        logging.warning("Pesan OTP tidak dapat dihapus otomatis; tidak ada isi OTP yang dicatat")
     try:
         client = get_client(update.effective_user.id)
-        client.submit_otp(code)
+        await asyncio.to_thread(client.submit_otp, code)
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("➕ Tambah Aktivitas", callback_data="menu:add"),
                                     InlineKeyboardButton("📊 Dashboard", callback_data="menu:progress")]])
         await context.bot.send_message(update.effective_user.id, "✅ *LOGIN BERHASIL*\nSesi e‑Master sudah aktif.", parse_mode="Markdown", reply_markup=kb)
@@ -136,7 +151,7 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await status.delete()
     except Exception:
-        pass
+        logging.debug("Pesan status formulir tidak dapat dihapus")
     context.user_data.clear()
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📍 Hari Ini", callback_data="date:today"),
@@ -180,7 +195,7 @@ async def load_targets(update: Update, context: ContextTypes.DEFAULT_TYPE, date:
         return DATE
     context.user_data["date"] = date.strftime("%d/%m/%Y")
     try:
-        targets = client.list_work_targets(date.strftime("%m"))
+        targets = await asyncio.to_thread(client.list_work_targets, date.strftime("%m"))
     except AuthenticationRequired:
         await message.reply_text("🔐 Sesi habis. Jalankan /login lalu ulangi.")
         return ConversationHandler.END
@@ -220,8 +235,12 @@ async def pick_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @private
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     client = get_client(update.effective_user.id)
+    keyword = update.message.text.strip()
+    if len(keyword) > 100:
+        await update.message.reply_text("Kata kunci terlalu panjang. Maksimal 100 karakter.")
+        return SEARCH
     try:
-        items = client.search_kamus(update.message.text.strip())
+        items = await asyncio.to_thread(client.search_kamus, keyword)
     except AuthenticationRequired:
         await update.message.reply_text("🔐 Sesi habis. Jalankan /login lalu ulangi.")
         return ConversationHandler.END
@@ -232,9 +251,55 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Tidak ditemukan. Coba kata kunci lain.")
         return SEARCH
     context.user_data["items"] = items
-    buttons = [[InlineKeyboardButton(f"{x.code} — {x.activity} ({x.wpt} mnt)", callback_data=f"pick:{i}")]
-               for i, x in enumerate(items)]
-    await update.message.reply_text("📚 *HASIL KAMUS AKTIVITAS*\nPilih salah satu:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+    context.user_data["kamus_keyword"] = keyword
+    text, markup = build_kamus_page(items, keyword, 0)
+    await update.message.reply_text(text, reply_markup=markup)
+    return PICK
+
+
+def build_kamus_page(items: list[KamusItem], keyword: str, requested_page: int):
+    """Buat satu halaman tombol; indeks callback tetap menunjuk daftar lengkap."""
+    total = len(items)
+    page_count = max(1, (total + KAMUS_PAGE_SIZE - 1) // KAMUS_PAGE_SIZE)
+    page = min(max(0, requested_page), page_count - 1)
+    start = page * KAMUS_PAGE_SIZE
+    end = min(total, start + KAMUS_PAGE_SIZE)
+    buttons = [[InlineKeyboardButton(
+        f"{item.code} — {item.activity[:46]} ({item.wpt} mnt)",
+        callback_data=f"pick:{index}")]
+        for index, item in enumerate(items[start:end], start=start)]
+
+    navigation = []
+    if page > 0:
+        navigation.append(InlineKeyboardButton("⬅️ Sebelumnya", callback_data=f"kamus:page:{page-1}"))
+    if page + 1 < page_count:
+        navigation.append(InlineKeyboardButton("Berikutnya ➡️", callback_data=f"kamus:page:{page+1}"))
+    if navigation:
+        buttons.append(navigation)
+    buttons.append([InlineKeyboardButton("🔎 Ganti kata kunci", callback_data="kamus:search")])
+    text = (f"📚 HASIL KAMUS AKTIVITAS\n"
+            f"Kata kunci: {keyword}\n"
+            f"Menampilkan {start + 1}–{end} dari {total} hasil "
+            f"(halaman {page + 1}/{page_count}).\n\nPilih salah satu:")
+    return text, InlineKeyboardMarkup(buttons)
+
+
+@private
+async def navigate_kamus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "kamus:search":
+        await query.edit_message_text("🔎 CARI AKTIVITAS\nKetik kata kunci baru, misalnya: surat, video, atau rapat.")
+        return SEARCH
+    try:
+        page = int(query.data.rsplit(":", 1)[1])
+        items: list[KamusItem] = context.user_data["items"]
+        keyword = context.user_data["kamus_keyword"]
+    except (KeyError, TypeError, ValueError):
+        await query.edit_message_text("⚠️ Hasil pencarian sudah kedaluwarsa. Tekan /tambah untuk memulai kembali.")
+        return ConversationHandler.END
+    text, markup = build_kamus_page(items, keyword, page)
+    await query.edit_message_text(text, reply_markup=markup)
     return PICK
 
 
@@ -242,8 +307,12 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    idx = int(query.data.split(":")[1])
-    item: KamusItem = context.user_data["items"][idx]
+    try:
+        idx = int(query.data.split(":")[1])
+        item: KamusItem = context.user_data["items"][idx]
+    except (KeyError, IndexError, TypeError, ValueError):
+        await query.edit_message_text("⚠️ Hasil pencarian sudah kedaluwarsa. Tekan /tambah untuk memulai kembali.")
+        return ConversationHandler.END
     context.user_data["item"] = item
     await query.edit_message_text(f"✅ AKTIVITAS DIPILIH\n\n{item.code} — {item.activity}\n📦 Satuan: {item.unit}\n⏱ WPT: {item.wpt} menit")
     await query.message.reply_text("🔢 Masukkan volume (angka bulat):")
@@ -274,6 +343,9 @@ async def object_work(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(text) < 5:
         await update.message.reply_text("Objek kerja terlalu pendek.")
         return OBJECT
+    if len(text) > 1000:
+        await update.message.reply_text("Objek kerja terlalu panjang. Maksimal 1.000 karakter.")
+        return OBJECT
     context.user_data["object"] = text
     item = context.user_data["item"]
     vol = context.user_data["volume"]
@@ -302,7 +374,8 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     date = context.user_data["date"]
     try:
         client = get_client(update.effective_user.id)
-        client.submit_activity(
+        await asyncio.to_thread(
+            client.submit_activity,
             month=date[3:5], target=context.user_data["target"], date=date, item=item,
             volume=context.user_data["volume"], object_work=context.user_data["object"])
         storage.add_sent(update.effective_user.id, date, item, context.user_data["volume"], context.user_data["object"])
@@ -326,7 +399,7 @@ async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now()
     try:
         client = get_client(update.effective_user.id)
-        current = client.get_month_progress(now.strftime("%m"))
+        current = await asyncio.to_thread(client.get_month_progress, now.strftime("%m"))
         count, minutes = current.activities, current.minutes
         source = "Data terbaru e‑Master"
     except AuthenticationRequired:
@@ -402,6 +475,10 @@ async def employee_tgid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("Telegram ID harus berupa angka.")
         return ADMIN_TGID
+    existing = storage.get_user(telegram_id)
+    if existing and existing[5]:
+        await update.message.reply_text("Akun admin tidak dapat didaftarkan ulang dari menu pegawai.")
+        return ADMIN_TGID
     context.user_data["new_telegram_id"] = telegram_id
     await update.message.reply_text("Masukkan NIP pegawai:")
     return ADMIN_NIP
@@ -409,22 +486,26 @@ async def employee_tgid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def employee_nip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     nip = update.message.text.strip()
-    if not nip.isdigit() or len(nip) < 10:
+    if not nip.isdigit() or not 10 <= len(nip) <= 25:
         await update.message.reply_text("NIP tidak valid. Masukkan angka NIP lengkap.")
         return ADMIN_NIP
     context.user_data["new_nip"] = nip
     try:
         await update.message.delete()
     except Exception:
-        pass
+        logging.warning("Pesan NIP tidak dapat dihapus otomatis; tidak ada NIP yang dicatat di log")
     await context.bot.send_message(update.effective_user.id, "Masukkan nama pegawai:")
     return ADMIN_NAME
 
 
 async def employee_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.message.text.strip()
+    if not name or len(name) > 100:
+        await update.message.reply_text("Nama harus 1–100 karakter.")
+        return ADMIN_NAME
     telegram_id = context.user_data["new_telegram_id"]
     storage.invite_user(telegram_id, context.user_data["new_nip"], name)
+    clear_cached_user(telegram_id)
     await update.message.reply_text(
         f"✅ UNDANGAN DIBUAT\n\nNama: {name}\nTelegram ID: {telegram_id}\n\n"
         "Minta pegawai membuka bot, tekan /start, lalu /aktifkan.")
@@ -432,7 +513,7 @@ async def employee_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(telegram_id,
             f"👋 Halo {name}, Anda telah didaftarkan ke Bot Aktivitas e‑Master.\nJalankan /aktifkan untuk memasukkan password pribadi.")
     except Exception:
-        pass
+        logging.info("Undangan tidak dapat dikirim langsung; pegawai tetap dapat membuka bot sendiri")
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -456,18 +537,23 @@ async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def activate_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     password = update.message.text
+    password_message_deleted = True
     try:
         await update.message.delete()
     except Exception:
-        pass
-    if len(password) < 4:
-        await context.bot.send_message(update.effective_user.id, "Password terlalu pendek. Jalankan /aktifkan kembali.")
+        password_message_deleted = False
+        logging.warning("Pesan password tidak dapat dihapus otomatis; tidak ada password yang dicatat di log")
+    if len(password) < 4 or len(password) > 256:
+        await context.bot.send_message(update.effective_user.id, "Password harus 4–256 karakter. Jalankan /aktifkan kembali.")
         return ConversationHandler.END
     encrypted = fernet.encrypt(password.encode()).decode()
     storage.activate_user(update.effective_user.id, encrypted)
-    clients.pop(update.effective_user.id, None)
+    clear_cached_user(update.effective_user.id)
+    notice = ("\n\n⚠️ Telegram tidak mengizinkan penghapusan otomatis. "
+              "Hapus pesan password Anda secara manual.") if not password_message_deleted else ""
     await context.bot.send_message(update.effective_user.id,
-        "✅ *AKUN AKTIF*\nPassword telah dienkripsi. Sekarang jalankan /login dan masukkan OTP Anda.", parse_mode="Markdown")
+        "✅ *AKUN AKTIF*\nPassword telah dienkripsi. Sekarang jalankan /login dan masukkan OTP Anda." + notice,
+        parse_mode="Markdown")
     return ConversationHandler.END
 
 
@@ -494,7 +580,7 @@ async def disable_employee(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     telegram_id = int(update.callback_query.data.split(":")[2])
     storage.disable_user(telegram_id)
-    clients.pop(telegram_id, None)
+    clear_cached_user(telegram_id)
     await update.callback_query.edit_message_text("✅ Pegawai dinonaktifkan. Data pegawai lain tidak berubah.")
 
 
@@ -505,7 +591,7 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
             await update.effective_message.reply_text(
                 "⚠️ Terjadi gangguan saat memproses tombol. Silakan tekan /tambah dan coba kembali.")
         except Exception:
-            pass
+            logging.debug("Pesan kesalahan tidak dapat dikirim ke pengguna")
 
 
 @private
@@ -540,7 +626,8 @@ def main():
                CallbackQueryHandler(quick_date, pattern=r"^date:")],
         TARGET: [CallbackQueryHandler(pick_target, pattern=r"^target:\d+$")],
         SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, search)],
-        PICK: [CallbackQueryHandler(pick, pattern=r"^pick:\d+$")],
+        PICK: [CallbackQueryHandler(pick, pattern=r"^pick:\d+$"),
+               CallbackQueryHandler(navigate_kamus, pattern=r"^kamus:(?:page:\d+|search)$")],
         VOLUME: [MessageHandler(filters.TEXT & ~filters.COMMAND, volume)],
         OBJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, object_work)],
         CONFIRM: [CallbackQueryHandler(confirm, pattern=r"^(send|cancel)$")],

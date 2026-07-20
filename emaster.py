@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -13,6 +14,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 
 BASE_URL = "https://master.bkd.jatimprov.go.id/"
+CATALOG_PATH = Path(__file__).with_name("kamus_aktivitas.json")
 
 
 class EMasterError(RuntimeError):
@@ -48,6 +50,52 @@ class MonthProgress:
     minutes: int
 
 
+def _normalize_search(value: str) -> str:
+    """Normalisasi ringan agar pencarian konsisten tanpa mengubah data kiriman."""
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return " ".join(normalized.split())
+
+
+def load_local_catalog(path: Path = CATALOG_PATH) -> list[KamusItem]:
+    """Muat kamus terverifikasi; data rusak diabaikan agar bot tetap dapat berjalan."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        rows = raw.get("items", [])
+    except (OSError, ValueError, AttributeError):
+        return []
+
+    catalog: list[KamusItem] = []
+    for row in rows:
+        try:
+            code = str(row["code"]).strip()
+            activity = str(row["activity"]).strip()
+            unit = str(row["unit"]).strip()
+            wpt = int(row["wpt"])
+            if not code or not activity or not unit or wpt <= 0:
+                continue
+            catalog.append(KamusItem(
+                code=code,
+                activity=activity,
+                unit=unit,
+                wpt=wpt,
+                description=str(row.get("description", "")).strip(),
+                object_hint=str(row.get("object_hint", activity)).strip() or activity,
+            ))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return catalog
+
+
+def filter_catalog(items: Iterable[KamusItem], keyword: str) -> list[KamusItem]:
+    """Cari pada nama aktivitas dan kembalikan seluruh hasil secara berurutan."""
+    needle = _normalize_search(keyword)
+    if not needle:
+        return []
+    found = [item for item in items if needle in _normalize_search(item.activity)]
+    return sorted(found, key=lambda item: (int(item.code) if item.code.isdigit() else 10**9,
+                                            _normalize_search(item.activity)))
+
+
 def _find_field(form, candidates: Iterable[str], input_type: str | None = None) -> str | None:
     lowered = tuple(x.lower() for x in candidates)
     for tag in form.select("input, select, textarea"):
@@ -69,7 +117,7 @@ class EMasterClient:
         self.fernet = Fernet(encryption_key.encode())
         self.session_path = Path(session_path)
         self.http = requests.Session()
-        self.http.headers.update({"User-Agent": "Mozilla/5.0 EMasterPersonalTelegramBot/1.0"})
+        self.http.headers.update({"User-Agent": "Mozilla/5.0 EMasterPersonalTelegramBot/19.0"})
         self._restore()
 
     def _restore(self) -> None:
@@ -83,8 +131,16 @@ class EMasterClient:
 
     def _persist(self) -> None:
         self.session_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.session_path.parent.chmod(0o700)
+        except OSError:
+            pass
         payload = json.dumps(requests.utils.dict_from_cookiejar(self.http.cookies)).encode()
         self.session_path.write_bytes(self.fernet.encrypt(payload))
+        try:
+            self.session_path.chmod(0o600)
+        except OSError:
+            pass
 
     def reset_session(self) -> None:
         """Buang cookie kedaluwarsa tanpa mengganti ENCRYPTION_KEY."""
@@ -157,30 +213,60 @@ class EMasterClient:
             raise EMasterError("OTP ditolak atau sudah kedaluwarsa.")
         self._persist()
 
-    def search_kamus(self, keyword: str, limit: int = 8) -> list[KamusItem]:
-        if not self.is_authenticated():
-            raise AuthenticationRequired("Sesi e-Master habis.")
-        url = urljoin(BASE_URL, "popup_skp/popup_aktifitas.php")
-        r = self.http.get(url, params={"aktifitas": keyword}, timeout=30)
-        soup = BeautifulSoup(r.text, "html.parser")
+    @staticmethod
+    def _parse_kamus_html(html: str) -> list[KamusItem]:
+        """Parse seluruh baris pada hasil pencarian e-Master tanpa batas delapan item."""
+        soup = BeautifulSoup(html, "html.parser")
         found: list[KamusItem] = []
         for tr in soup.select("tr"):
             cells = [c.get_text(" ", strip=True) for c in tr.select("td")]
             if len(cells) < 6 or not cells[0].isdigit():
                 continue
             code_activity = cells[1]
-            match = re.match(r"(\d+)[-–](.*)", code_activity)
+            match = re.match(r"\s*(\d+)\s*[-–]\s*(.*)", code_activity)
             code, activity = (match.group(1), match.group(2).strip()) if match else (cells[0], code_activity)
             try:
                 wpt = int(re.sub(r"\D", "", cells[3]))
             except ValueError:
                 continue
-            item = KamusItem(code, activity, cells[2], wpt, cells[4], cells[5])
-            if keyword.lower() in (activity + " " + cells[4]).lower():
-                found.append(item)
-            if len(found) >= limit:
-                break
+            if code and activity and cells[2].strip() and wpt > 0:
+                found.append(KamusItem(code, activity, cells[2], wpt, cells[4], cells[5]))
         return found
+
+    def search_kamus(self, keyword: str, limit: int | None = None) -> list[KamusItem]:
+        """Cari kamus terbaru secara lengkap.
+
+        Daftar PDF terverifikasi menjadi jaring pengaman agar hasil tidak hilang akibat
+        pagination/limit pada popup e-Master. Data live tetap dipakai untuk memperbarui
+        metadata kode yang sama. ``limit`` hanya dipertahankan untuk kompatibilitas dan
+        tidak membatasi hasil secara default.
+        """
+        if not self.is_authenticated():
+            raise AuthenticationRequired("Sesi e-Master habis.")
+
+        local_items = load_local_catalog()
+        url = urljoin(BASE_URL, "popup_skp/popup_aktifitas.php")
+        live_items: list[KamusItem] = []
+        try:
+            response = self.http.get(url, params={"aktifitas": keyword}, timeout=20)
+            response.raise_for_status()
+            if "login area" in response.text.casefold():
+                raise AuthenticationRequired("Sesi e-Master habis.")
+            live_items = self._parse_kamus_html(response.text)
+        except AuthenticationRequired:
+            raise
+        except requests.RequestException as exc:
+            if not local_items:
+                raise EMasterError("Kamus aktivitas e-Master tidak dapat dibuka.") from exc
+
+        # PDF memastikan daftar lengkap; hasil live dengan kode sama memperbarui
+        # satuan/WPT jika server e-Master telah berubah setelah PDF diterbitkan.
+        merged: dict[str, KamusItem] = {item.code: item for item in local_items}
+        for item in live_items:
+            merged[item.code] = item
+
+        found = filter_catalog(merged.values(), keyword)
+        return found[:limit] if limit is not None else found
 
     def list_work_targets(self, month: str) -> list[WorkTarget]:
         """Read every personal Kegiatan Tugas Jabatan and its hidden IDs."""

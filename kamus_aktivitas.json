@@ -1,0 +1,510 @@
+{
+  "version": "2026-07-18",
+  "source": "KAMUS KINERJA BIDANG PEMASARAN DAN KELEMBAGAAN PAREKRAF - KAMUS BKD",
+  "items": [
+    {
+      "code": "1",
+      "activity": "Melakukan fasilitasi Peminjaman Mobil Dinas",
+      "unit": "Kegiatan",
+      "wpt": 30,
+      "object_hint": "Kendaraan dinas"
+    },
+    {
+      "code": "2",
+      "activity": "Melakukan layanan kegiatan Pimpinan",
+      "unit": "Kegiatan",
+      "wpt": 30,
+      "object_hint": "Layanan kegiatan pimpinan"
+    },
+    {
+      "code": "3",
+      "activity": "Melaksanakan pemusnahan dokumen/barang",
+      "unit": "Laporan",
+      "wpt": 60,
+      "object_hint": "Jenis dokumen/barang yang dimusnahkan"
+    },
+    {
+      "code": "4",
+      "activity": "Melaksanakan rekonsiliasi",
+      "unit": "Laporan",
+      "wpt": 120,
+      "object_hint": "Data dan Berita Acara Rekonsiliasi"
+    },
+    {
+      "code": "5",
+      "activity": "Melaksanakan Survey",
+      "unit": "Lokasi",
+      "wpt": 120,
+      "object_hint": "Data survei"
+    },
+    {
+      "code": "6",
+      "activity": "Melakukan Evaluasi",
+      "unit": "Kegiatan",
+      "wpt": 60,
+      "object_hint": "Data evaluasi"
+    },
+    {
+      "code": "7",
+      "activity": "Melakukan identifikasi",
+      "unit": "Laporan",
+      "wpt": 120,
+      "object_hint": "Data & hasil identifikasi"
+    },
+    {
+      "code": "8",
+      "activity": "Melakukan kajian kebijakan",
+      "unit": "Kajian",
+      "wpt": 120,
+      "object_hint": "Dokumen kajian"
+    },
+    {
+      "code": "9",
+      "activity": "Melakukan koordinasi dengan Pusat dan Kab/Kota",
+      "unit": "Laporan",
+      "wpt": 120,
+      "object_hint": "Notulen"
+    },
+    {
+      "code": "10",
+      "activity": "Melakukan koordinasi dengan SKPD",
+      "unit": "Laporan",
+      "wpt": 30,
+      "object_hint": "Notulen"
+    },
+    {
+      "code": "11",
+      "activity": "Melakukan koordinasi melalui media elektronik",
+      "unit": "Laporan",
+      "wpt": 15,
+      "object_hint": "Bukti komunikasi"
+    },
+    {
+      "code": "12",
+      "activity": "Melakukan monitoring",
+      "unit": "Kegiatan",
+      "wpt": 90,
+      "object_hint": "Laporan monitoring"
+    },
+    {
+      "code": "13",
+      "activity": "Melakukan Pendampingan",
+      "unit": "Kegiatan",
+      "wpt": 60,
+      "object_hint": "Laporan pendampingan"
+    },
+    {
+      "code": "14",
+      "activity": "Memberi Disposisi",
+      "unit": "Dokumen",
+      "wpt": 15,
+      "object_hint": "Dokumen yang didisposisi"
+    },
+    {
+      "code": "15",
+      "activity": "Membuat administrasi kepegawaian",
+      "unit": "Dokumen",
+      "wpt": 30,
+      "object_hint": "Berkas kepegawaian"
+    },
+    {
+      "code": "16",
+      "activity": "Membuat administrasi peralatan kantor",
+      "unit": "Data",
+      "wpt": 30,
+      "object_hint": "Data inventaris"
+    },
+    {
+      "code": "17",
+      "activity": "Membuat jadwal kegiatan",
+      "unit": "Jadwal kegiatan",
+      "wpt": 60,
+      "object_hint": "Jadwal kegiatan"
+    },
+    {
+      "code": "18",
+      "activity": "Membuat konsep Keputusan Gubernur",
+      "unit": "SK",
+      "wpt": 120,
+      "object_hint": "Draft SK"
+    },
+    {
+      "code": "19",
+      "activity": "Membuat konsep surat dinas/nota dinas",
+      "unit": "Surat",
+      "wpt": 30,
+      "object_hint": "Draft surat"
+    },
+    {
+      "code": "20",
+      "activity": "Membuat konsep surat perintah tugas",
+      "unit": "Surat",
+      "wpt": 15,
+      "object_hint": "Draft SPT/SPMT"
+    },
+    {
+      "code": "21",
+      "activity": "Membuat konsep surat undangan",
+      "unit": "Surat",
+      "wpt": 15,
+      "object_hint": "Undangan"
+    },
+    {
+      "code": "22",
+      "activity": "Membuat konten berita",
+      "unit": "Naskah",
+      "wpt": 30,
+      "object_hint": "Naskah berita"
+    },
+    {
+      "code": "23",
+      "activity": "Membuat Konten Foto",
+      "unit": "Kegiatan",
+      "wpt": 60,
+      "object_hint": "File foto"
+    },
+    {
+      "code": "24",
+      "activity": "Membuat Konten Video",
+      "unit": "Kegiatan",
+      "wpt": 120,
+      "object_hint": "File video"
+    },
+    {
+      "code": "25",
+      "activity": "Membuat Notula/Berita Acara",
+      "unit": "Notula",
+      "wpt": 60,
+      "object_hint": "Notulen/Berita acara"
+    },
+    {
+      "code": "26",
+      "activity": "Membuat SOP",
+      "unit": "Kegiatan",
+      "wpt": 120,
+      "object_hint": "Dokumen SOP"
+    },
+    {
+      "code": "27",
+      "activity": "membuat surat keterangan",
+      "unit": "Surat Keterangan",
+      "wpt": 30,
+      "object_hint": "Surat keterangan"
+    },
+    {
+      "code": "28",
+      "activity": "Membuat Surat Teguran",
+      "unit": "Surat",
+      "wpt": 20,
+      "object_hint": "Surat teguran"
+    },
+    {
+      "code": "29",
+      "activity": "Memelihara arsip",
+      "unit": "Box Arsip",
+      "wpt": 15,
+      "object_hint": "Arsip yang tertata"
+    },
+    {
+      "code": "30",
+      "activity": "Memelihara peralatan kantor",
+      "unit": "Laporan",
+      "wpt": 60,
+      "object_hint": "Peralatan kantor"
+    },
+    {
+      "code": "31",
+      "activity": "Memindai (scan) dokumen",
+      "unit": "Dokumen",
+      "wpt": 5,
+      "object_hint": "File scan"
+    },
+    {
+      "code": "32",
+      "activity": "Memverifikasi Data",
+      "unit": "Data",
+      "wpt": 10,
+      "object_hint": "Data pada aplikasi"
+    },
+    {
+      "code": "33",
+      "activity": "Memverifikasi Dokumen",
+      "unit": "Dokumen",
+      "wpt": 30,
+      "object_hint": "Dokumen kedinasan"
+    },
+    {
+      "code": "34",
+      "activity": "Menerima kunjungan kerja",
+      "unit": "Kegiatan",
+      "wpt": 60,
+      "object_hint": "Kunjungan kerja/studi banding"
+    },
+    {
+      "code": "35",
+      "activity": "Menganalisa data",
+      "unit": "Data",
+      "wpt": 60,
+      "object_hint": "Analisis data dari aplikasi"
+    },
+    {
+      "code": "36",
+      "activity": "Menganalisa Kebijakan",
+      "unit": "Kebijakan",
+      "wpt": 120,
+      "object_hint": "Analisis kebijakan"
+    },
+    {
+      "code": "37",
+      "activity": "Mengarsipkan Berkas Fisik",
+      "unit": "bendel",
+      "wpt": 15,
+      "object_hint": "Berkas fisik kedinasan"
+    },
+    {
+      "code": "38",
+      "activity": "Mengarsipkan Berkas Secara Elektronik",
+      "unit": "Dokumen Elektronik",
+      "wpt": 10,
+      "object_hint": "File elektronik"
+    },
+    {
+      "code": "39",
+      "activity": "Mengawasi Ujian",
+      "unit": "Kegiatan",
+      "wpt": 180,
+      "object_hint": "Mengawasi ujian kedinasan"
+    },
+    {
+      "code": "40",
+      "activity": "Mengelola surat",
+      "unit": "Surat",
+      "wpt": 10,
+      "object_hint": "Pengelolaan surat kedinasan"
+    },
+    {
+      "code": "41",
+      "activity": "Menghadiri Acara Ceremonial",
+      "unit": "Undangan",
+      "wpt": 120,
+      "object_hint": "Undangan ceremonial kedinasan yang diikuti"
+    },
+    {
+      "code": "42",
+      "activity": "Menghimpun Data",
+      "unit": "Data",
+      "wpt": 30,
+      "object_hint": "Data dari aplikasi"
+    },
+    {
+      "code": "43",
+      "activity": "Menghimpun Dokumen",
+      "unit": "Dokumen",
+      "wpt": 30,
+      "object_hint": "Dokumen kedinasan"
+    },
+    {
+      "code": "44",
+      "activity": "Mengidentifikasi data",
+      "unit": "Data",
+      "wpt": 30,
+      "object_hint": "Data dari aplikasi"
+    },
+    {
+      "code": "45",
+      "activity": "Mengikuti Pendidikan dan Pelatihan",
+      "unit": "Jam Pelajaran (JP)",
+      "wpt": 45,
+      "object_hint": "Diklat yang diikuti"
+    },
+    {
+      "code": "46",
+      "activity": "Mengikuti Rapat Internal / Dialog Kinerja",
+      "unit": "Kegiatan",
+      "wpt": 60,
+      "object_hint": "Rapat tim kerja"
+    },
+    {
+      "code": "47",
+      "activity": "Mengikuti rapat koordinasi",
+      "unit": "Kegiatan",
+      "wpt": 180,
+      "object_hint": "Rapat koordinasi kedinasan"
+    },
+    {
+      "code": "48",
+      "activity": "Mengikuti rapat teknis",
+      "unit": "Kegiatan",
+      "wpt": 180,
+      "object_hint": "Rapat teknis kedinasan"
+    },
+    {
+      "code": "49",
+      "activity": "Menginput data",
+      "unit": "Data",
+      "wpt": 10,
+      "object_hint": "Data diinput ke aplikasi"
+    },
+    {
+      "code": "50",
+      "activity": "Mengirim surat/dokumen secara elektronik",
+      "unit": "Kegiatan",
+      "wpt": 5,
+      "object_hint": "surat/dokumen secara elektronik"
+    },
+    {
+      "code": "51",
+      "activity": "Mengirim surat/dokumen secara fisik",
+      "unit": "Kegiatan",
+      "wpt": 30,
+      "object_hint": "surat/dokumen secara fisik kedinasan"
+    },
+    {
+      "code": "52",
+      "activity": "Mengolah data",
+      "unit": "Data",
+      "wpt": 120,
+      "object_hint": "Dataset siap disajikan"
+    },
+    {
+      "code": "53",
+      "activity": "Mengoreksi Produk Tata Naskah Dinas",
+      "unit": "Dokumen",
+      "wpt": 30,
+      "object_hint": "Produk Tata Naskah Dinas yang dikoreksi"
+    },
+    {
+      "code": "54",
+      "activity": "Mengurus kelengkapan Perizinan",
+      "unit": "Laporan",
+      "wpt": 60,
+      "object_hint": "Dokumen izin lengkap"
+    },
+    {
+      "code": "55",
+      "activity": "Menjadi Pembicara",
+      "unit": "Jam Pelajaran (JP)",
+      "wpt": 45,
+      "object_hint": "Materi/moderator"
+    },
+    {
+      "code": "56",
+      "activity": "Menyusun KAK Kegiatan",
+      "unit": "Dokumen",
+      "wpt": 120,
+      "object_hint": "Dokumen KAK kegiatan kedinasan"
+    },
+    {
+      "code": "57",
+      "activity": "Menyiapkan bahan kerja",
+      "unit": "Bahan",
+      "wpt": 60,
+      "object_hint": "Bahan/materi"
+    },
+    {
+      "code": "58",
+      "activity": "Menyiapkan kegiatan rapat/diklat",
+      "unit": "Kegiatan",
+      "wpt": 30,
+      "object_hint": "Persiapan kegiatan rapat/diklat kedinasan"
+    },
+    {
+      "code": "59",
+      "activity": "Menyusun Agenda Surat",
+      "unit": "Surat",
+      "wpt": 5,
+      "object_hint": "Agenda surat yang dicatat"
+    },
+    {
+      "code": "60",
+      "activity": "Menyusun Dokumen",
+      "unit": "Dokumen",
+      "wpt": 60,
+      "object_hint": "Dokumen kedinasan"
+    },
+    {
+      "code": "61",
+      "activity": "Mengoreksi kajian kebijakan",
+      "unit": "Kajian",
+      "wpt": 120,
+      "object_hint": "Kajian kebijakan pemerintah"
+    },
+    {
+      "code": "62",
+      "activity": "Menyusun Laporan",
+      "unit": "Laporan",
+      "wpt": 120,
+      "object_hint": "Laporan kedinasan"
+    },
+    {
+      "code": "63",
+      "activity": "Menyusun PKS/ MOU",
+      "unit": "Dokumen",
+      "wpt": 120,
+      "object_hint": "Dokumen kerjasama kedinasan"
+    },
+    {
+      "code": "64",
+      "activity": "Mengupdate Data",
+      "unit": "Halaman menu",
+      "wpt": 10,
+      "object_hint": "Database berkala"
+    },
+    {
+      "code": "65",
+      "activity": "Mengoreksi surat",
+      "unit": "Surat",
+      "wpt": 15,
+      "object_hint": "Surat kedinasan"
+    },
+    {
+      "code": "66",
+      "activity": "Menyiapkan materi atau bahan ajar",
+      "unit": "Materi",
+      "wpt": 120,
+      "object_hint": "Materi/bahan ajar"
+    },
+    {
+      "code": "67",
+      "activity": "Melakukan pemeriksaan pelanggaran",
+      "unit": "Kegiatan",
+      "wpt": 120,
+      "object_hint": "Pelanggaran yang dilakukan"
+    },
+    {
+      "code": "68",
+      "activity": "Melakukan mediasi",
+      "unit": "Kegiatan",
+      "wpt": 120,
+      "object_hint": "Permasalahan antar pihak/instansi"
+    },
+    {
+      "code": "69",
+      "activity": "Melakukan penanganan kasus",
+      "unit": "Kegiatan",
+      "wpt": 120,
+      "object_hint": "Kasus yang diterima"
+    },
+    {
+      "code": "70",
+      "activity": "Melakukan penanganan pengaduan",
+      "unit": "Kegiatan",
+      "wpt": 120,
+      "object_hint": "Kasus atau pengaduan yang diterima"
+    },
+    {
+      "code": "71",
+      "activity": "Melakukan pembinaan terhadap ASN",
+      "unit": "Laporan",
+      "wpt": 120,
+      "object_hint": "Individu atau kelompok yang membutuhkan coaching/mentoring/konseling"
+    },
+    {
+      "code": "72",
+      "activity": "Membuat rancangan peraturan perundang-undangan",
+      "unit": "Konsep peraturan",
+      "wpt": 120,
+      "object_hint": "Konsep peraturan"
+    }
+  ]
+}

@@ -6,6 +6,8 @@ class Storage:
     def __init__(self, path: str):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path, check_same_thread=False)
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA busy_timeout=5000")
         self.db.execute("""CREATE TABLE IF NOT EXISTS activities (
           id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER NOT NULL DEFAULT 0,
           activity_date TEXT NOT NULL,
@@ -23,6 +25,10 @@ class Storage:
           is_admin INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )""")
         self.db.commit()
+        try:
+            Path(path).chmod(0o600)
+        except OSError:
+            pass
 
     def add_sent(self, telegram_id, date, item, volume, object_work):
         self.db.execute("""INSERT INTO activities
@@ -55,7 +61,7 @@ class Storage:
     def ensure_admin(self, telegram_id: int, nip: str, password_enc: str):
         self.db.execute("""INSERT INTO users(telegram_id,nip,password_enc,status,is_admin)
           VALUES(?,?,?,'active',1) ON CONFLICT(telegram_id) DO UPDATE SET
-          nip=excluded.nip, password_enc=COALESCE(users.password_enc,excluded.password_enc),
+          nip=excluded.nip, password_enc=excluded.password_enc,
           status='active', is_admin=1""", (telegram_id, nip, password_enc))
         self.db.commit()
 
