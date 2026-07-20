@@ -24,6 +24,28 @@ class Storage:
           password_enc TEXT, full_name TEXT, status TEXT NOT NULL DEFAULT 'invited',
           is_admin INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )""")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS deletion_audit (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER NOT NULL,
+          emaster_id TEXT NOT NULL, activity_date TEXT NOT NULL,
+          activity TEXT NOT NULL, object_work TEXT NOT NULL,
+          deleted_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )""")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS edit_audit (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER NOT NULL,
+          emaster_id TEXT NOT NULL, activity_date_before TEXT NOT NULL,
+          activity_date_after TEXT NOT NULL, activity_before TEXT NOT NULL,
+          activity_after TEXT NOT NULL, edited_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )""")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS favorites (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER NOT NULL,
+          code TEXT NOT NULL, activity TEXT NOT NULL, unit TEXT NOT NULL,
+          wpt INTEGER NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(telegram_id,code,activity)
+        )""")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS drafts (
+          telegram_id INTEGER PRIMARY KEY, payload_json TEXT NOT NULL,
+          updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )""")
         self.db.commit()
         try:
             Path(path).chmod(0o600)
@@ -46,6 +68,60 @@ class Storage:
         return self.db.execute("""SELECT activity_date, activity, wpt, volume, object_work
           FROM activities WHERE status='sent' AND telegram_id=? ORDER BY id DESC LIMIT ?""",
           (telegram_id, limit)).fetchall()
+
+    def add_deleted(self, telegram_id: int, activity):
+        self.db.execute("""INSERT INTO deletion_audit
+          (telegram_id,emaster_id,activity_date,activity,object_work)
+          VALUES (?,?,?,?,?)""",
+          (telegram_id, activity.id_realisasi, activity.date,
+           activity.detail, activity.object_work))
+        self.db.commit()
+
+    def add_edited(self, telegram_id: int, before, after):
+        self.db.execute("""INSERT INTO edit_audit
+          (telegram_id,emaster_id,activity_date_before,activity_date_after,
+           activity_before,activity_after) VALUES (?,?,?,?,?,?)""",
+          (telegram_id, before.id_realisasi, before.date, after.date,
+           before.detail, after.detail))
+        self.db.commit()
+
+    def add_favorite(self, telegram_id: int, item):
+        self.db.execute("""INSERT INTO favorites(telegram_id,code,activity,unit,wpt)
+          VALUES(?,?,?,?,?) ON CONFLICT(telegram_id,code,activity) DO UPDATE SET
+          unit=excluded.unit,wpt=excluded.wpt""",
+          (telegram_id, item.code, item.activity, item.unit, item.wpt))
+        self.db.commit()
+
+    def list_favorites(self, telegram_id: int, limit: int = 20):
+        return self.db.execute("""SELECT id,code,activity,unit,wpt
+          FROM favorites WHERE telegram_id=? ORDER BY activity COLLATE NOCASE LIMIT ?""",
+          (telegram_id, limit)).fetchall()
+
+    def get_favorite(self, telegram_id: int, favorite_id: int):
+        return self.db.execute("""SELECT id,code,activity,unit,wpt
+          FROM favorites WHERE telegram_id=? AND id=?""",
+          (telegram_id, favorite_id)).fetchone()
+
+    def delete_favorite(self, telegram_id: int, favorite_id: int):
+        self.db.execute("DELETE FROM favorites WHERE telegram_id=? AND id=?",
+                        (telegram_id, favorite_id))
+        self.db.commit()
+
+    def save_draft(self, telegram_id: int, payload_json: str):
+        self.db.execute("""INSERT INTO drafts(telegram_id,payload_json,updated_at)
+          VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(telegram_id) DO UPDATE SET
+          payload_json=excluded.payload_json,updated_at=CURRENT_TIMESTAMP""",
+          (telegram_id, payload_json))
+        self.db.commit()
+
+    def get_draft(self, telegram_id: int):
+        row = self.db.execute("SELECT payload_json,updated_at FROM drafts WHERE telegram_id=?",
+                              (telegram_id,)).fetchone()
+        return row
+
+    def delete_draft(self, telegram_id: int):
+        self.db.execute("DELETE FROM drafts WHERE telegram_id=?", (telegram_id,))
+        self.db.commit()
 
     def claim_legacy_activities(self, admin_id: int):
         self.db.execute("UPDATE activities SET telegram_id=? WHERE telegram_id=0", (admin_id,))
