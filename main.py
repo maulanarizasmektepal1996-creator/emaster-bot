@@ -18,6 +18,7 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
 
 from emaster import (AuthenticationRequired, EMasterActivity, EMasterClient,
                      EMasterError, KamusItem, WorkTarget)
+from staff_directory import LocalStaffDirectory, StaffDirectoryError
 from storage import Storage
 
 load_dotenv()
@@ -31,6 +32,7 @@ storage.ensure_admin(OWNER, os.environ["EMASTER_NIP"],
                      fernet.encrypt(os.environ["EMASTER_PASSWORD"].encode()).decode())
 storage.claim_legacy_activities(OWNER)
 storage.claim_legacy_favorites(OWNER)
+staff_directory = LocalStaffDirectory()
 clients: dict[int, EMasterClient] = {}
 session_dir = Path(os.getenv("SESSION_PATH", "/data/emaster_session.bin")).parent / "sessions"
 
@@ -159,6 +161,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif user[4] == "disabled":
         await update.message.reply_text("⛔ Akun dinonaktifkan oleh admin.")
     else:
+        user = await sync_employee_profile(update.effective_user.id)
         await show_menu(update.effective_message, user)
 
 
@@ -178,7 +181,7 @@ def menu_content(user, reveal_nip: bool = False):
     name = user[3] or "Pegawai"
     nip = user[1]
     shown_nip = nip if reveal_nip else (("•" * max(0, len(nip) - 4)) + nip[-4:])
-    position = user[6] or "Belum terbaca — tekan Perbarui Profil"
+    position = user[6] or "Belum terdaftar pada data pegawai — tekan Perbarui Profil"
     text = ("✨ AKTIVITAS HARIAN E‑MASTER\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             f"👤 Nama: {name}\n🪪 NIP: {shown_nip}\n💼 Jabatan: {position}\n"
@@ -201,12 +204,17 @@ async def show_menu(message, user, edit=False):
 
 async def sync_employee_profile(telegram_id: int, *, strict: bool = False):
     try:
-        profile = await asyncio.to_thread(get_client(telegram_id).get_profile)
+        user = storage.get_user(telegram_id)
+        profile = await asyncio.to_thread(staff_directory.find_by_nip, user[1])
+        if not profile:
+            storage.clear_profile_position(telegram_id)
+            raise StaffDirectoryError(
+                "NIP/NPPK tidak ditemukan pada DATA PEGAWAI tab update.")
         storage.update_profile(telegram_id, profile.name, profile.position)
-    except EMasterError:
+    except StaffDirectoryError:
         if strict:
             raise
-        logging.warning("Profil e-Master belum dapat disinkronkan untuk Telegram ID %s", telegram_id)
+        logging.warning("Profil lokal belum dapat disinkronkan untuk Telegram ID %s", telegram_id)
     return storage.get_user(telegram_id)
 
 
@@ -1347,7 +1355,7 @@ async def delete_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @private
 async def menu_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    user = storage.get_user(update.effective_user.id)
+    user = await sync_employee_profile(update.effective_user.id)
     await show_menu(update.callback_query.message, user, edit=True)
 
 
@@ -1357,13 +1365,7 @@ async def refresh_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer("Memperbarui profil…")
     try:
         user = await sync_employee_profile(update.effective_user.id, strict=True)
-    except AuthenticationRequired:
-        await query.message.reply_text(
-            "🔐 Sesi e‑Master habis. Login OTP untuk memperbarui profil.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
-                "🔐 Login OTP", callback_data="menu:login")]]))
-        return
-    except EMasterError as exc:
+    except StaffDirectoryError as exc:
         await query.message.reply_text(f"❌ Profil belum dapat diperbarui: {exc}")
         return
     await show_menu(query.message, user, edit=True)

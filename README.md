@@ -7,8 +7,8 @@ Bot admin-terkelola untuk mencari Kamus Aktivitas Disbudpar, menghitung WPT, mem
 - Admin mendaftarkan pegawai berdasarkan Telegram ID dan NIP.
 - Password dimasukkan sendiri oleh pegawai, langsung dihapus dari chat, lalu disimpan terenkripsi.
 - Akun, cookie sesi, dashboard WPT, dan riwayat setiap pegawai terpisah.
-- Halaman depan setelah login menampilkan nama, NIP, dan jabatan dari akun e‑Master masing-masing.
-- Tombol Perbarui Profil menyinkronkan perubahan jabatan tanpa mendaftarkan ulang pegawai.
+- Halaman depan menampilkan nama dan jabatan dari file **DATA PEGAWAI** tab `update`, dicocokkan berdasarkan NIP/NPPK.
+- Tombol Perbarui Profil membaca ulang direktori lokal secara instan tanpa koneksi ke Google Sheet.
 - Admin dapat melihat status dan menonaktifkan pegawai.
 - Login NIP/password dan OTP Google Authenticator saat sesi berakhir.
 - Setiap pegawai yang menjalankan `/login` selalu memulai sesi baru dan wajib memasukkan OTP miliknya.
@@ -70,6 +70,7 @@ Jangan membagikan akun Telegram. Admin tidak dapat melihat password asli pegawai
 - Edit hanya menggunakan form resmi pada domain e‑Master, terikat ke ID realisasi pilihan, diperiksa ulang terhadap batas WPT, lalu diverifikasi dari halaman detail.
 - Draf tidak menyimpan password, OTP, atau cookie; hanya isian aktivitas dan ID tugas yang dibutuhkan untuk melanjutkan formulir.
 - Favorit, draf, riwayat, dan audit selalu dipisahkan berdasarkan Telegram ID.
+- Direktori jabatan tidak menyimpan NIP/NPPK mentah; pencocokan memakai sidik SHA‑256 dan hanya nama serta jabatan yang disertakan.
 - Saat upgrade dari versi single-user, favorit lama dimigrasikan otomatis ke akun admin tanpa menghapus tabel sumber.
 - Jangan menyalakan log debug atau membagikan Railway Logs yang mungkin memuat konteks teknis.
 
@@ -84,6 +85,17 @@ File `kamus_aktivitas.json` memuat 72 aktivitas dari **KAMUS KINERJA BIDANG PEMA
 Pencarian dilakukan pada nama aktivitas. Contoh `surat` menghasilkan 10 aktivitas (kode 19, 20, 21, 27, 28, 40, 50, 51, 59, dan 65). Bot menampilkan delapan item per halaman; tekan **Berikutnya** untuk melihat sisanya.
 
 Untuk memperbarui kamus di kemudian hari, ganti isi `kamus_aktivitas.json` dengan daftar yang sudah disahkan dan pertahankan struktur `code`, `activity`, `unit`, `wpt`, serta `object_hint`.
+
+## Data nama dan jabatan pegawai
+
+File `data_jabatan.json` dibuat hanya dari **DATA PEGAWAI BID PEMASARAN(1).xlsx**, tab `update`. Bot tidak lagi mengambil nama atau jabatan profil dari halaman e‑Master maupun Google Sheet.
+
+- Sebanyak 23 profil dengan NIP/NPPK valid dapat dipasangkan otomatis.
+- Baris tanpa NIP/NPPK tidak dimasukkan karena tidak dapat dicocokkan secara aman.
+- NIP yang dimasukkan admin boleh memiliki spasi atau tanda pemisah; bot menormalkannya sebelum pencocokan.
+- Angka NIP/NPPK mentah tidak disertakan dalam direktori rilis.
+- Daftar **Kegiatan Tugas Jabatan** untuk formulir aktivitas tetap dibaca langsung dari akun e‑Master setiap pegawai; direktori lokal hanya mengisi identitas di halaman depan.
+- Jika file sumber berubah, bangun ulang paket dari file Excel terbaru. Jangan mengedit sidik NIP secara manual.
 
 ## Menyiapkan bot Telegram
 
@@ -120,12 +132,13 @@ e‑Master kedaluwarsa, bot akan membersihkan cookie lama secara otomatis saat
 1. Simpan nilai Railway Variables dan pastikan Volume `/data` tetap terpasang.
 2. Ganti kode proyek dengan isi paket versi terbaru, lalu deploy ulang.
 3. **Jangan membuat atau mengganti `ENCRYPTION_KEY`.** Kunci lama diperlukan untuk membuka password pegawai yang sudah tersimpan.
-4. Tidak perlu mengisi ulang `EMASTER_BREAKDOWN_ID`, `EMASTER_TARGET_ID`, atau hash tugas; versi ini mengambil tugas jabatan setiap pegawai langsung dari e‑Master.
-5. Setelah deploy, setiap pegawai menjalankan `/login` dan memasukkan OTP baru.
-6. Uji `/tambah`, cari `surat`, dan pastikan tertulis **10 hasil** dengan tombol **Berikutnya** untuk halaman kedua.
-7. Uji `/riwayat`; setiap aktivitas harus memiliki tombol **Edit**, **Salin**, dan **Hapus**.
-8. Uji draf dengan menghentikan pengisian di tengah, lalu tekan **Lanjutkan Draft**.
-9. Sebelum dipakai bersama, lakukan satu uji Edit dan Hapus pada data uji yang benar, kemudian cocokkan hasilnya di situs e‑Master.
+4. Tidak perlu menambahkan URL Google Sheet atau variabel data jabatan. Direktori lokal sudah disertakan dalam paket.
+5. Tidak perlu mengisi ulang `EMASTER_BREAKDOWN_ID`, `EMASTER_TARGET_ID`, atau hash tugas; pilihan Kegiatan Tugas Jabatan tetap diambil dari e‑Master masing-masing.
+6. Setelah deploy, buka `/start` atau tekan **Perbarui Profil**. Setiap login e‑Master tetap meminta OTP baru.
+7. Uji `/tambah`, cari `surat`, dan pastikan tertulis **10 hasil** dengan tombol **Berikutnya** untuk halaman kedua.
+8. Uji `/riwayat`; setiap aktivitas harus memiliki tombol **Edit**, **Salin**, dan **Hapus**.
+9. Uji draf dengan menghentikan pengisian di tengah, lalu tekan **Lanjutkan Draft**.
+10. Sebelum dipakai bersama, lakukan satu uji Edit dan Hapus pada data uji yang benar, kemudian cocokkan hasilnya di situs e‑Master.
 
 ## Menjalankan lokal
 

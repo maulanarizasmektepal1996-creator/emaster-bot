@@ -68,13 +68,6 @@ class MonthProgress:
     minutes: int
 
 
-@dataclass(frozen=True)
-class EmployeeProfile:
-    name: str
-    nip: str
-    position: str
-
-
 def _normalize_search(value: str) -> str:
     """Normalisasi ringan agar pencarian konsisten tanpa mengubah data kiriman."""
     normalized = unicodedata.normalize("NFKC", value).casefold()
@@ -142,7 +135,7 @@ class EMasterClient:
         self.fernet = Fernet(encryption_key.encode())
         self.session_path = Path(session_path)
         self.http = requests.Session()
-        self.http.headers.update({"User-Agent": "Mozilla/5.0 EMasterPersonalTelegramBot/21.2.0"})
+        self.http.headers.update({"User-Agent": "Mozilla/5.0 EMasterPersonalTelegramBot/21.3.0"})
         self._restore()
 
     def _restore(self) -> None:
@@ -244,86 +237,6 @@ class EMasterClient:
         if not self.is_authenticated():
             raise EMasterError("OTP ditolak atau sudah kedaluwarsa.")
         self._persist()
-
-    @staticmethod
-    def _parse_profile_html(html: str, fallback_nip: str) -> EmployeeProfile:
-        """Baca identitas secara defensif dari halaman Info Jabatan e-Master."""
-        soup = BeautifulSoup(html, "html.parser")
-        name = ""
-        welcome = soup.select_one(".welcome .note a, .welcome a")
-        if welcome:
-            name = welcome.get_text(" ", strip=True)
-        if not name:
-            heading = next((tag.get_text(" ", strip=True) for tag in soup.select("h1, h2, h3")
-                            if "aktivitas harian tahun" in tag.get_text(" ", strip=True).casefold()), "")
-            match = re.search(r"\s[-–]\s(?:detail\s[-–]\s)?(.+)$", heading, re.I)
-            name = match.group(1).strip() if match else ""
-
-        plain = soup.get_text(" ", strip=True)
-        nip_match = re.search(r"(?:NIP|Login)\s*:?\s*(\d{10,25})", plain, re.I)
-        nip = nip_match.group(1) if nip_match else fallback_nip
-
-        position = ""
-        accepted_labels = {
-            "jabatan", "nama jabatan", "namajabatan", "jabatan saat ini",
-            "nama jabatan saat ini", "jabatan sekarang", "jabatan aktif",
-            "jabatan definitif", "nomenklatur jabatan", "jabatan terakhir",
-        }
-        for row in soup.select("tr"):
-            cells = [cell.get_text(" ", strip=True) for cell in row.select("th, td")]
-            if len(cells) < 2:
-                continue
-            for index, cell in enumerate(cells[:-1]):
-                label = _normalize_search(cell).rstrip(" :")
-                if label not in accepted_labels:
-                    continue
-                candidate = next((value.strip() for value in cells[index + 1:]
-                                  if value.strip().strip(":-") and value.strip() != "0"), "")
-                if candidate and candidate not in {"-", "0"}:
-                    position = candidate
-                    break
-            if position:
-                break
-        if not position:
-            for label in soup.select("label"):
-                label_text = _normalize_search(label.get_text(" ", strip=True)).rstrip(" :")
-                if label_text not in accepted_labels:
-                    continue
-                target = soup.find(id=label.get("for")) if label.get("for") else None
-                if target:
-                    position = (target.get("value") or target.get_text(" ", strip=True)).strip()
-                    if position:
-                        break
-        if not position:
-            for field in soup.select("input[name], textarea[name], select[name]"):
-                field_name = _normalize_search(field.get("name", "")).replace("_", " ")
-                if field_name not in accepted_labels:
-                    continue
-                if field.name == "select":
-                    selected = field.select_one("option[selected]") or field.select_one("option")
-                    position = selected.get_text(" ", strip=True) if selected else ""
-                else:
-                    position = (field.get("value") or field.get_text(" ", strip=True)).strip()
-                if position:
-                    break
-        return EmployeeProfile(name=name, nip=nip, position=position)
-
-    def get_profile(self) -> EmployeeProfile:
-        """Ambil nama, NIP, dan jabatan dari akun yang sedang login."""
-        try:
-            response = self.http.get(
-                urljoin(BASE_URL, "essmedia.php"), params={"module": "jabatan"}, timeout=30)
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            raise EMasterError("Profil pegawai e-Master belum dapat dibuka.") from exc
-        if "login area" in response.text.casefold() or "index_mfa" in response.url:
-            raise AuthenticationRequired("Sesi e-Master habis.")
-        profile = self._parse_profile_html(response.text, self.nip)
-        if not profile.name:
-            # Halaman Info Jabatan dapat berubah, tetapi NIP akun tetap diketahui
-            # dari kredensial pegawai dan aman digunakan sebagai fallback.
-            profile = EmployeeProfile(name="", nip=self.nip, position=profile.position)
-        return profile
 
     @staticmethod
     def _parse_kamus_html(html: str) -> list[KamusItem]:

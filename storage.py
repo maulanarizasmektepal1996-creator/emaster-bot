@@ -188,6 +188,12 @@ class Storage:
           (full_name, full_name, position, position, telegram_id))
         self.db.commit()
 
+    def clear_profile_position(self, telegram_id: int):
+        self.db.execute("""UPDATE users SET position=NULL,
+          profile_updated_at=CURRENT_TIMESTAMP WHERE telegram_id=?""",
+          (telegram_id,))
+        self.db.commit()
+
     def activate_user(self, telegram_id: int, password_enc: str):
         self.db.execute("UPDATE users SET password_enc=?, status='active' WHERE telegram_id=? AND status='invited'",
                         (password_enc, telegram_id))

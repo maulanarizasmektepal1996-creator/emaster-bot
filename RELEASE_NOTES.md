@@ -1,3 +1,14 @@
+# Versi 21.3.0 - Direktori Jabatan Lokal
+
+- Menggunakan **DATA PEGAWAI BID PEMASARAN(1).xlsx** tab `update` sebagai satu-satunya sumber nama dan jabatan profil.
+- Mengimpor 23 profil yang memiliki NIP/NPPK valid dan melewati baris tanpa identitas agar tidak salah memasangkan pegawai.
+- Mencocokkan profil berdasarkan NIP/NPPK yang dinormalisasi, bukan nama atau urutan baris.
+- Menyimpan hanya sidik SHA‑256 NIP/NPPK di paket; nomor mentah, nomor telepon, email, pangkat, dan data tab lama tidak disertakan.
+- Sinkronisasi profil berlangsung lokal dan instan sehingga tidak memperlambat login OTP atau bergantung pada Google Sheet.
+- `/start`, menu utama, login sukses, dan tombol Perbarui Profil menggunakan direktori yang sama.
+- Kegiatan Tugas Jabatan untuk pengisian aktivitas tetap diambil dinamis dari e‑Master milik masing-masing pegawai.
+- Mempertahankan database, akun pegawai, enkripsi, sesi, aktivitas, draf, dan seluruh fitur versi 21.2.0.
+
 # Versi 21.2.0 - Tanggal Satu Bulan Penuh
 
 - Mengizinkan aktivitas pada seluruh tanggal bulan berjalan, dari tanggal 1 sampai hari terakhir.

@@ -1,5 +1,7 @@
 import asyncio
+import json
 import os
+import re
 import sqlite3
 import tempfile
 import unittest
@@ -11,6 +13,8 @@ from cryptography.fernet import Fernet
 
 from emaster import (EMasterActivity, EMasterClient, EMasterError, KamusItem,
                      WorkTarget, filter_catalog, load_local_catalog)
+from staff_directory import (DIRECTORY_PATH, LocalStaffDirectory,
+                             StaffDirectoryError, identifier_fingerprint)
 from storage import Storage
 
 
@@ -36,30 +40,41 @@ class KamusCatalogTests(unittest.TestCase):
         self.assertEqual(10, len(items))
 
 
-class EmployeeProfileTests(unittest.TestCase):
-    def test_profile_parser_reads_name_nip_and_position_from_info_table(self):
-        html = """
-          <div class='welcome'><span class='note'><a>BUDI SANTOSO</a></span></div>
-          <table>
-            <tr><td>NIP</td><td>199001012020121001</td></tr>
-            <tr><td>Nama Jabatan :</td><td>Pranata Hubungan Masyarakat Ahli Pertama</td></tr>
-          </table>
-        """
-        profile = EMasterClient._parse_profile_html(html, "000000000000000000")
-        self.assertEqual("BUDI SANTOSO", profile.name)
-        self.assertEqual("199001012020121001", profile.nip)
-        self.assertEqual("Pranata Hubungan Masyarakat Ahli Pertama", profile.position)
+class LocalStaffDirectoryTests(unittest.TestCase):
+    def test_bundled_directory_contains_23_valid_profiles(self):
+        directory = LocalStaffDirectory()
+        self.assertEqual(23, directory.count)
 
-    def test_profile_parser_uses_heading_and_fallback_nip(self):
-        html = """
-          <h2>Aktivitas Harian Tahun 2026 - Detail - SITI AMINAH</h2>
-          <label for='jabatan'>Jabatan</label>
-          <input id='jabatan' name='jabatan' value='Pengelola Sistem Informasi'>
-        """
-        profile = EMasterClient._parse_profile_html(html, "198501012010012001")
-        self.assertEqual("SITI AMINAH", profile.name)
-        self.assertEqual("198501012010012001", profile.nip)
-        self.assertEqual("Pengelola Sistem Informasi", profile.position)
+    def test_bundled_directory_does_not_store_raw_nip(self):
+        payload = json.loads(DIRECTORY_PATH.read_text(encoding="utf-8"))
+        self.assertTrue(all(set(row) == {"nip_sha256", "name", "position"}
+                            for row in payload["records"]))
+        self.assertIsNone(re.search(r"(?<!\d)\d{18}(?!\d)",
+                                    DIRECTORY_PATH.read_text(encoding="utf-8")))
+
+    def test_profile_is_matched_by_fingerprint(self):
+        nip = "190001012000011001"
+        payload = {
+            "schema": 1,
+            "records": [{
+                "nip_sha256": identifier_fingerprint(nip),
+                "name": "PEGAWAI UJI",
+                "position": "Jabatan Uji",
+            }],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "directory.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            record = LocalStaffDirectory(path).find_by_nip(nip)
+        self.assertEqual("PEGAWAI UJI", record.name)
+        self.assertEqual("Jabatan Uji", record.position)
+
+    def test_invalid_directory_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "directory.json"
+            path.write_text('{"schema":1,"records":[]}', encoding="utf-8")
+            with self.assertRaises(StaffDirectoryError):
+                LocalStaffDirectory(path)
 
 
 class ActivityDeletionTests(unittest.TestCase):

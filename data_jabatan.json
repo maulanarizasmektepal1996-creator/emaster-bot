@@ -1,0 +1,123 @@
+{
+  "schema": 1,
+  "source": "DATA PEGAWAI BID PEMASARAN(1).xlsx",
+  "source_sheet": "update",
+  "identifier_storage": "sha256",
+  "records": [
+    {
+      "nip_sha256": "78124e58770cee128a578d16f849f02e638296c2fbe8084c2d6afb4d5eec3b7b",
+      "name": "ACHMAD RIZA MAULANA, S.T.",
+      "position": "Penata Layanan Operasional"
+    },
+    {
+      "nip_sha256": "bcd0da812e6500f79fa53d9d552bc6c343b535fc4f48534a2ac1662d1314b2c8",
+      "name": "ALI AFANDI, S.Pd., M.T.",
+      "position": "KEPALA BIDANG PEMASARAN DAN KELEMBAGAAN PAREKRAF"
+    },
+    {
+      "nip_sha256": "594f0c8897ff92cd6645331d823834c6c3600ecf991b60cfbb84a7830d51d1a8",
+      "name": "ANGGI MEIKA PRATAMASARI., S.S.",
+      "position": "Penata Layanan Operasional"
+    },
+    {
+      "nip_sha256": "72d6b2acf119d21aec37b3c1d0aa372418a380222fb94cf71fca1f4ca85365c0",
+      "name": "ANNEKE CHITRA GHIANTI, S.M.",
+      "position": "Analis Perdagangan Ahli Pertama"
+    },
+    {
+      "nip_sha256": "fcb6277bd133a9108dedd9b84d3405751830fa9e8e4d28e30c6f476480941f3a",
+      "name": "ARI DEVINTA PURWATI, S.Tr.M.",
+      "position": "Adyatama Parekraf Ahli Pertama"
+    },
+    {
+      "nip_sha256": "302127170485245de5264a649bc49e52954c362e78f235ce9f853927ba725c4e",
+      "name": "CHANDRA NURHIDAYAT., S.Hub.,Int.",
+      "position": "Adyatama Parekraf Ahli Muda"
+    },
+    {
+      "nip_sha256": "ac1ef0922bc5018ef59bdb5fc579aaffc1db4ef29da16be63460717ee60875eb",
+      "name": "Dra. MARFU'AH SUHARTI. M.Psi.",
+      "position": "Adyatama Parekraf Ahli Madya"
+    },
+    {
+      "nip_sha256": "9e12aedcca92682a9b088b9397e756d89eb921d9d4846a58bbcf569d8b77c12a",
+      "name": "EGHITA DESIANE NARESWARI, S.Hum., M.Si",
+      "position": "Penata Layanan Operasional"
+    },
+    {
+      "nip_sha256": "20e11a6c69edfd8aaa0237f0d76ca3aeb3d71e5db16f02eb79b34cedfbf11a63",
+      "name": "HARIYANTO S.E.",
+      "position": "Adyatama Parekraf Ahli Pertama"
+    },
+    {
+      "nip_sha256": "7b5819b9efba640a00d6b10074281b221d928c61ec2f83c934318b449dad0cc2",
+      "name": "IBNU PURWANTAMA S.Par.",
+      "position": "Pengolah Data dan Informasi"
+    },
+    {
+      "nip_sha256": "a17e02c225a904fabccfd67cffcf5eb59c156a0bed23dbc4792027ecfaa0ddf6",
+      "name": "INDRA RIZKY FAUZI , S.E.",
+      "position": "Penata Layanan Operasional"
+    },
+    {
+      "nip_sha256": "c78724a751389d81bf1a81bc57576466d5330d382d9bde0731b31c158f51d530",
+      "name": "ISMADI, SE., MM.",
+      "position": "Penelaah Teknis Kebijakan"
+    },
+    {
+      "nip_sha256": "44e508f07b7e9c5ff0af69fbddd9463098e91652d9a716dc386846bad29e405c",
+      "name": "LUKY NURAINI ROSYIDAH, S.STP., M.AP.",
+      "position": "Adyatama Parekraf Ahli Muda"
+    },
+    {
+      "nip_sha256": "be664994bf70a2336809bc17a4dc30d3b9c9ac8f4e840bcba1a0f457ec5e476b",
+      "name": "NUR FAJAR",
+      "position": "Operator Layanan Operasional"
+    },
+    {
+      "nip_sha256": "fd2aca3c7fcc4df55e58c829746f706ac38ba8545bdaf290098056c13aaa0466",
+      "name": "SARI WASANANING A.P, S.S.",
+      "position": "Adyatama Parekraf Ahli Pertama"
+    },
+    {
+      "nip_sha256": "69ce2c5a85ece87c28ae10c644be4c71016ce84f854d3cdbd0a885bb68f0afb6",
+      "name": "SATRIA DEVI KURNIAWAN, S.STP.",
+      "position": "Adyatama Parekraf Ahli Muda"
+    },
+    {
+      "nip_sha256": "d52950ec5eb80ab9171a242144f25b1e36daec9ace795fd69ba177149159af51",
+      "name": "SOFYANA SISKA, S.S.",
+      "position": "Penata Layanan Operasional"
+    },
+    {
+      "nip_sha256": "8b4da75f54d5269ef920dbeaecc79d3cac0204959922235525b8c2de2545fb1b",
+      "name": "VIKO SATRIA PRATAMA, A.Md.Kom.",
+      "position": "Tenaga Ahli"
+    },
+    {
+      "nip_sha256": "2e6ef3d9918cff22eef207d91a20bea63486eee09d5bb4404bbbdf590d94df51",
+      "name": "WAHYU SULTONI ALIF MUHAMMAD",
+      "position": "Operator Layanan Operasional"
+    },
+    {
+      "nip_sha256": "bf1c26f799ee02844207a3124e91eae63f22c9575a3d94faf864d298050f991b",
+      "name": "WISNU ADY SEPTIAN, S.IP.",
+      "position": "Pranata Hubungan Masyarakat Ahli Pertama"
+    },
+    {
+      "nip_sha256": "26b2a2538674a6aa1c63771a74916fdab66b6bd3e26258d642e8decf1392e6bb",
+      "name": "WULAN BUDI INDRASWARI, S.Ds.",
+      "position": "Penata Layanan Operasional"
+    },
+    {
+      "nip_sha256": "92276bbb9b507ebcca57038ecc7b8299ea7007f56a058dd314e1aac2a7cfcc48",
+      "name": "YEKTI LESTARI, S.St.Par.",
+      "position": "Penelaah Teknis Kebijakan"
+    },
+    {
+      "nip_sha256": "f5db327eff2032da590c82633561aa445cd0ea711764c3d98e919a9f9fa50d08",
+      "name": "YEREMIA PURBOWIDODO SANTOSO, S.E",
+      "position": "Fasilitator Pemerintahan - Keuangan"
+    }
+  ]
+}
