@@ -1,20 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import os
 import sqlite3
 import tempfile
 import unicodedata
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from PIL import Image, UnidentifiedImageError
+from telegram import (BotCommand, InlineKeyboardButton, InlineKeyboardMarkup,
+                      InputFile, Update)
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, ConversationHandler, MessageHandler, filters)
 
@@ -24,8 +27,10 @@ from drive_storage import DriveStorageError, GoogleDriveStorage
 from staff_directory import LocalStaffDirectory, StaffDirectoryError
 from storage import Storage
 from wfh_report import (EvidenceFile, ReportActivity, build_wfh_report,
+                        convert_docx_to_pdf,
                         format_indonesian_date, now_jakarta, report_date_for_access,
-                        report_file_name, report_generation_allowed, tidy_sentence)
+                        report_file_name, report_generation_allowed,
+                        report_pdf_file_name, tidy_sentence)
 
 load_dotenv()
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
@@ -45,6 +50,18 @@ session_dir = Path(os.getenv("SESSION_PATH", "/data/emaster_session.bin")).paren
 drive_storage = GoogleDriveStorage()
 REPORT_TEMPLATE = Path(__file__).with_name("templates") / "Laporan_WFH_template.docx"
 JAKARTA = ZoneInfo("Asia/Jakarta")
+
+
+@dataclass(frozen=True)
+class GeneratedWfhReport:
+    word_name: str
+    word_url: str
+    word_content: bytes
+    pdf_name: str
+    pdf_url: str
+    pdf_content: bytes
+    activity_count: int
+    signature_included: bool
 
 
 def clear_cached_user(telegram_id: int) -> None:
@@ -76,6 +93,7 @@ DATE, TARGET, SEARCH, PICK, VOLUME, OBJECT, CONFIRM, OTP, ADMIN_TGID, ADMIN_NIP,
 EDIT_ACTIVITY, EDIT_PICK, EDIT_DATE, EDIT_VOLUME, EDIT_OBJECT, EDIT_CONFIRM = range(12, 18)
 COPY_DATE, COPY_TARGET, COPY_VOLUME, COPY_OBJECT = range(18, 22)
 ADMIN_TYPE, DAILY_ACTIVITY, DAILY_CONFIRM, ADDITIONAL_PHOTO = range(22, 26)
+SIGNATURE_UPLOAD = 26
 KAMUS_PAGE_SIZE = 8
 HISTORY_PAGE_SIZE = 5
 
@@ -85,7 +103,10 @@ def employee_type(user) -> str:
 
 
 def employee_unit(user) -> str:
-    return user[9] if user and len(user) > 9 and user[9] else "Pemasaran"
+    unit = user[9] if user and len(user) > 9 and user[9] else ""
+    if not unit or unit.strip().lower() == "pemasaran":
+        return "Bidang Pemasaran dan Kelembagaan Parekraf"
+    return unit
 
 
 def normalize_text(value: str) -> str:
@@ -220,6 +241,7 @@ def menu_content(user, reveal_nip: bool = False):
         ])
     rows.append([InlineKeyboardButton("👤 Profil", callback_data="menu:profileview"),
                  InlineKeyboardButton("❓ Bantuan", callback_data="menu:help")])
+    rows.append([InlineKeyboardButton("✍️ Tanda Tangan", callback_data="signature:menu")])
     if kind == "asn":
         rows.append([InlineKeyboardButton("🔄 Perbarui Profil", callback_data="menu:profile")])
     if kind == "asn" and storage.get_draft(user[0]):
@@ -1853,6 +1875,106 @@ async def help_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🏠 Menu Utama", callback_data="menu:home")]]))
 
 
+@private
+async def signature_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = storage.get_user(update.effective_user.id)
+    available = len(user) > 11 and bool(user[11])
+    status = "✅ Sudah tersimpan" if available else "⚠️ Belum diunggah"
+    await query.message.reply_text(
+        "✍️ TANDA TANGAN LAPORAN WFH\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"Status: {status}\n\n"
+        "Gunakan PNG transparan agar hasil terlihat natural. Tanda tangan akan "
+        "dipangkas otomatis, dibuat proporsional, dan hanya dipakai pada laporan Anda.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                "🔄 Ganti PNG" if available else "⬆️ Unggah PNG",
+                callback_data="signature:upload")],
+            [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu:home")],
+        ]))
+
+
+@private
+async def signature_begin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text(
+        "Kirim tanda tangan sebagai file PNG (bukan sebagai foto).\n\n"
+        "Batas ukuran 5 MB. Area transparan berlebih akan dipangkas otomatis. "
+        "Ketik /batal untuk membatalkan.")
+    return SIGNATURE_UPLOAD
+
+
+@private
+async def signature_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    document = update.effective_message.document
+    if not document:
+        await update.effective_message.reply_text(
+            "❌ Kirim tanda tangan melalui ikon lampiran sebagai file PNG, bukan foto.")
+        return SIGNATURE_UPLOAD
+    file_name = document.file_name or "tanda_tangan.png"
+    if not file_name.lower().endswith(".png"):
+        await update.effective_message.reply_text("❌ Format harus PNG.")
+        return SIGNATURE_UPLOAD
+    if document.file_size and document.file_size > 5 * 1024 * 1024:
+        await update.effective_message.reply_text("❌ Ukuran PNG maksimal 5 MB.")
+        return SIGNATURE_UPLOAD
+
+    try:
+        telegram_file = await context.bot.get_file(document.file_id)
+        content = bytes(await telegram_file.download_as_bytearray())
+        with Image.open(io.BytesIO(content)) as image:
+            if image.format != "PNG":
+                raise ValueError("File bukan PNG")
+            image.verify()
+        with Image.open(io.BytesIO(content)) as image:
+            if image.width < 50 or image.height < 50:
+                raise ValueError("Resolusi PNG terlalu kecil")
+            if image.width > 6000 or image.height > 6000:
+                raise ValueError("Resolusi PNG terlalu besar")
+    except (UnidentifiedImageError, OSError, ValueError):
+        await update.effective_message.reply_text(
+            "❌ File PNG tidak valid. Gunakan gambar tanda tangan yang dapat dibuka normal.")
+        return SIGNATURE_UPLOAD
+
+    user = storage.get_user(update.effective_user.id)
+    try:
+        with tempfile.TemporaryDirectory(prefix="signature_") as temp_dir:
+            local_signature = Path(temp_dir) / "Tanda_Tangan.png"
+            local_signature.write_bytes(content)
+            employee_folder_id = await asyncio.to_thread(
+                drive_storage.employee_folder, user[3] or str(user[0]), user[10])
+            if not user[10]:
+                storage.set_drive_folder_id(user[0], employee_folder_id)
+            destination_id = await asyncio.to_thread(
+                drive_storage.signature_folder, employee_folder_id)
+            existing_file_id = user[11] if len(user) > 11 else None
+            drive_file_id, drive_url = await asyncio.to_thread(
+                drive_storage.upload_or_update_file,
+                local_path=local_signature,
+                file_name="Tanda_Tangan.png",
+                mime_type="image/png",
+                parent_id=destination_id,
+                existing_file_id=existing_file_id,
+            )
+        storage.set_signature(
+            user[0], drive_file_id=drive_file_id,
+            drive_url=drive_url, file_name="Tanda_Tangan.png")
+    except DriveStorageError as exc:
+        await update.effective_message.reply_text(
+            f"❌ Tanda tangan belum dapat disimpan: {exc}")
+        return ConversationHandler.END
+
+    await update.effective_message.reply_text(
+        "✅ TANDA TANGAN BERHASIL DISIMPAN\n\n"
+        "Tanda tangan ini akan dimasukkan otomatis ke laporan WFH Word dan PDF Anda.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+            "🏠 Menu Utama", callback_data="menu:home")]]))
+    return ConversationHandler.END
+
+
 def _generate_report_sync(user, moment: datetime, report_date):
     rows = storage.list_wfh_activities(user[0], report_date.isoformat())
     if not rows:
@@ -1880,14 +2002,24 @@ def _generate_report_sync(user, moment: datetime, report_date):
                 activity_time=activity_row[2], text=activity_row[3],
                 evidence=evidence_files))
         file_name = report_file_name(report_date)
+        pdf_file_name = report_pdf_file_name(report_date)
         local_report = temp_path / file_name
+        signature_path = None
+        if len(user) > 11 and user[11]:
+            signature_path = drive_storage.download_file(
+                user[11], temp_path / "signature.png")
         build_wfh_report(
             template_path=REPORT_TEMPLATE, output_path=local_report,
             employee_name=user[3] or str(user[0]), employee_identifier=user[1],
             employee_type=employee_type(user),
             position=user[6] or ("Pegawai Non-ASN" if employee_type(user) == "non_asn" else "-"),
             unit_name=employee_unit(user), report_date=report_date,
-            activities=report_activities)
+            activities=report_activities, signature_path=signature_path)
+        local_pdf = convert_docx_to_pdf(local_report, temp_path)
+        if local_pdf.name != pdf_file_name:
+            expected_pdf = temp_path / pdf_file_name
+            local_pdf.replace(expected_pdf)
+            local_pdf = expected_pdf
         employee_folder_id = drive_storage.employee_folder(
             user[3] or str(user[0]), user[10])
         if not user[10]:
@@ -1900,12 +2032,28 @@ def _generate_report_sync(user, moment: datetime, report_date):
             local_path=local_report, file_name=file_name,
             mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             parent_id=destination_id, existing_file_id=existing_file_id)
+        existing_pdf_file_id = existing[9] if existing and existing[5] == "uploaded" else None
+        pdf_file_id, pdf_file_url = drive_storage.upload_or_update_file(
+            local_path=local_pdf, file_name=pdf_file_name,
+            mime_type="application/pdf", parent_id=destination_id,
+            existing_file_id=existing_pdf_file_id)
         storage.save_report(
             telegram_id=user[0], report_date=report_date.isoformat(),
             file_name=file_name, drive_file_id=file_id, drive_url=file_url,
+            pdf_file_name=pdf_file_name, pdf_drive_file_id=pdf_file_id,
+            pdf_drive_url=pdf_file_url,
             activity_count=len(report_activities),
             generated_at_local=moment.isoformat(timespec="seconds"))
-        return file_name, file_url, len(report_activities)
+        return GeneratedWfhReport(
+            word_name=file_name,
+            word_url=file_url,
+            word_content=local_report.read_bytes(),
+            pdf_name=pdf_file_name,
+            pdf_url=pdf_file_url,
+            pdf_content=local_pdf.read_bytes(),
+            activity_count=len(report_activities),
+            signature_included=signature_path is not None,
+        )
 
 
 @private
@@ -1920,7 +2068,10 @@ async def generate_wfh_report(update: Update, context: ContextTypes.DEFAULT_TYPE
         latest = storage.latest_report(user[0])
         buttons = [[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu:home")]]
         if latest and latest[2]:
-            buttons.insert(0, [InlineKeyboardButton("📄 Buka Laporan Terakhir", url=latest[2])])
+            drive_buttons = [InlineKeyboardButton("📝 Word Terakhir", url=latest[2])]
+            if len(latest) > 7 and latest[7]:
+                drive_buttons.append(InlineKeyboardButton("📕 PDF Terakhir", url=latest[7]))
+            buttons.insert(0, drive_buttons)
         reason = ("Generate Laporan WFH sedang ditutup secara manual oleh admin."
                   if access_mode == "closed" else
                   "Laporan hanya dapat dibuat setiap hari Jumat sampai pukul 23.59 WIB.")
@@ -1946,16 +2097,34 @@ async def generate_wfh_report(update: Update, context: ContextTypes.DEFAULT_TYPE
                     f"Aktivitas harus bertanggal {format_indonesian_date(report_date)} "
                     "dan dikirim pada tanggal yang sama.")
                 return
-            file_name, file_url, count = result
             await status.edit_text(
                 "✅ LAPORAN WFH BERHASIL DIBUAT\n\n"
                 f"📅 Periode: {format_indonesian_date(report_date)}\n"
-                f"📝 Jumlah aktivitas: {count}\n"
-                f"📄 Nama file: {file_name}",
+                f"📝 Jumlah aktivitas: {result.activity_count}\n"
+                f"✍️ Tanda tangan: {'sudah dimasukkan' if result.signature_included else 'belum tersedia'}\n"
+                "☁️ Word dan PDF sudah tersimpan di Google Drive.\n"
+                "📥 Kedua file dikirim di bawah pesan ini.",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📄 Buka Laporan WFH", url=file_url)],
+                    [InlineKeyboardButton("📝 Buka Word", url=result.word_url),
+                     InlineKeyboardButton("📕 Buka PDF", url=result.pdf_url)],
                     [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu:home")],
                 ]))
+            try:
+                await update.effective_message.reply_document(
+                    document=InputFile(io.BytesIO(result.word_content),
+                                       filename=result.word_name),
+                    caption="📝 Laporan WFH versi Word")
+                await update.effective_message.reply_document(
+                    document=InputFile(io.BytesIO(result.pdf_content),
+                                       filename=result.pdf_name),
+                    caption="📕 Laporan WFH versi PDF")
+            except Exception:
+                logging.exception(
+                    "Laporan sudah tersimpan di Drive tetapi pengiriman Telegram gagal untuk ID %s",
+                    user[0])
+                await update.effective_message.reply_text(
+                    "⚠️ File sudah aman di Google Drive, tetapi pengiriman langsung ke Telegram "
+                    "belum berhasil. Gunakan tombol Word atau PDF di atas.")
         except Exception as exc:
             file_name = report_file_name(report_date)
             storage.save_report_error(user[0], report_date.isoformat(), file_name, str(exc))
@@ -2057,7 +2226,9 @@ async def employee_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kind = context.user_data.get("new_employee_type", "asn")
     storage.invite_user(telegram_id, context.user_data["new_nip"], name,
                         employee_type=kind,
-                        unit_name=os.getenv("DEFAULT_UNIT_KERJA", "Pemasaran"))
+                        unit_name=os.getenv(
+                            "DEFAULT_UNIT_KERJA",
+                            "Bidang Pemasaran dan Kelembagaan Parekraf"))
     clear_cached_user(telegram_id)
     next_step = ("Minta pegawai membuka bot, tekan /start, lalu /aktifkan."
                  if kind == "asn" else
@@ -2340,6 +2511,11 @@ def main():
         states={ACTIVATE_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, activate_password)]},
         fallbacks=[CommandHandler("batal", cancel)]))
     app.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(signature_begin, pattern=r"^signature:upload$")],
+        states={SIGNATURE_UPLOAD: [MessageHandler(
+            filters.ALL & ~filters.COMMAND, signature_receive)]},
+        fallbacks=[CommandHandler("batal", cancel)], allow_reentry=True))
+    app.add_handler(ConversationHandler(
         entry_points=[CommandHandler("login", login),
                       CallbackQueryHandler(login, pattern=r"^menu:login$"),
                       CommandHandler("tambah", add),
@@ -2407,6 +2583,7 @@ def main():
     app.add_handler(CallbackQueryHandler(refresh_profile, pattern=r"^menu:profile$"))
     app.add_handler(CallbackQueryHandler(profile_view, pattern=r"^menu:profileview$"))
     app.add_handler(CallbackQueryHandler(help_view, pattern=r"^menu:help$"))
+    app.add_handler(CallbackQueryHandler(signature_menu, pattern=r"^signature:menu$"))
     app.add_handler(CallbackQueryHandler(daily_today, pattern=r"^daily:today$"))
     app.add_handler(CallbackQueryHandler(daily_history, pattern=r"^daily:history$"))
     app.add_handler(CallbackQueryHandler(evidence_list, pattern=r"^daily:evidence$"))

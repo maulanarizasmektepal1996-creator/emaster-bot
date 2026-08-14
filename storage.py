@@ -25,7 +25,9 @@ class Storage:
           telegram_id INTEGER PRIMARY KEY, nip TEXT NOT NULL,
           password_enc TEXT, full_name TEXT, status TEXT NOT NULL DEFAULT 'invited',
           is_admin INTEGER NOT NULL DEFAULT 0, position TEXT,
-          profile_updated_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
+          profile_updated_at TEXT, signature_drive_file_id TEXT,
+          signature_drive_url TEXT, signature_file_name TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )""")
         user_columns = {row[1] for row in self.db.execute("PRAGMA table_info(users)")}
         if "position" not in user_columns:
@@ -38,6 +40,12 @@ class Storage:
             self.db.execute("ALTER TABLE users ADD COLUMN unit_name TEXT NOT NULL DEFAULT 'Pemasaran'")
         if "drive_folder_id" not in user_columns:
             self.db.execute("ALTER TABLE users ADD COLUMN drive_folder_id TEXT")
+        if "signature_drive_file_id" not in user_columns:
+            self.db.execute("ALTER TABLE users ADD COLUMN signature_drive_file_id TEXT")
+        if "signature_drive_url" not in user_columns:
+            self.db.execute("ALTER TABLE users ADD COLUMN signature_drive_url TEXT")
+        if "signature_file_name" not in user_columns:
+            self.db.execute("ALTER TABLE users ADD COLUMN signature_file_name TEXT")
         self.db.execute("""CREATE TABLE IF NOT EXISTS deletion_audit (
           id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER NOT NULL,
           emaster_id TEXT NOT NULL, activity_date TEXT NOT NULL,
@@ -105,12 +113,22 @@ class Storage:
           file_name TEXT NOT NULL,
           drive_file_id TEXT,
           drive_url TEXT,
+          pdf_file_name TEXT,
+          pdf_drive_file_id TEXT,
+          pdf_drive_url TEXT,
           activity_count INTEGER NOT NULL DEFAULT 0,
           status TEXT NOT NULL DEFAULT 'pending',
           generated_at_local TEXT,
           error_message TEXT,
           UNIQUE(telegram_id,report_date)
         )""")
+        report_columns = {row[1] for row in self.db.execute("PRAGMA table_info(wfh_reports)")}
+        if "pdf_file_name" not in report_columns:
+            self.db.execute("ALTER TABLE wfh_reports ADD COLUMN pdf_file_name TEXT")
+        if "pdf_drive_file_id" not in report_columns:
+            self.db.execute("ALTER TABLE wfh_reports ADD COLUMN pdf_drive_file_id TEXT")
+        if "pdf_drive_url" not in report_columns:
+            self.db.execute("ALTER TABLE wfh_reports ADD COLUMN pdf_drive_url TEXT")
         self.db.execute("""CREATE TABLE IF NOT EXISTS bot_settings (
           setting_key TEXT PRIMARY KEY,
           setting_value TEXT NOT NULL,
@@ -223,7 +241,8 @@ class Storage:
         self.db.commit()
 
     def invite_user(self, telegram_id: int, nip: str, full_name: str = "",
-                    employee_type: str = "asn", unit_name: str = "Pemasaran"):
+                    employee_type: str = "asn",
+                    unit_name: str = "Bidang Pemasaran dan Kelembagaan Parekraf"):
         if employee_type not in {"asn", "non_asn"}:
             raise ValueError("Jenis pegawai tidak valid")
         status = "active" if employee_type == "non_asn" else "invited"
@@ -231,6 +250,7 @@ class Storage:
           VALUES(?,?,?,?) ON CONFLICT(telegram_id) DO UPDATE SET
           nip=excluded.nip, full_name=excluded.full_name, status=excluded.status,
           employee_type=?, unit_name=?, drive_folder_id=NULL,
+          signature_drive_file_id=NULL,signature_drive_url=NULL,signature_file_name=NULL,
           password_enc=NULL, position=NULL, profile_updated_at=NULL""",
           (telegram_id, nip, full_name, status, employee_type, unit_name))
         # Kolom baru tidak terdapat pada daftar INSERT lama agar migrasi tetap aman.
@@ -248,7 +268,8 @@ class Storage:
 
     def get_user(self, telegram_id: int):
         return self.db.execute("""SELECT telegram_id,nip,password_enc,full_name,status,is_admin,
-          position,profile_updated_at,employee_type,unit_name,drive_folder_id
+          position,profile_updated_at,employee_type,unit_name,drive_folder_id,
+          signature_drive_file_id,signature_drive_url,signature_file_name
           FROM users WHERE telegram_id=?""", (telegram_id,)).fetchone()
 
     def update_profile(self, telegram_id: int, full_name: str, position: str):
@@ -282,6 +303,14 @@ class Storage:
         with self.lock:
             self.db.execute("UPDATE users SET drive_folder_id=? WHERE telegram_id=?",
                             (folder_id, telegram_id))
+            self.db.commit()
+
+    def set_signature(self, telegram_id: int, *, drive_file_id: str,
+                      drive_url: str, file_name: str):
+        with self.lock:
+            self.db.execute("""UPDATE users SET signature_drive_file_id=?,
+              signature_drive_url=?,signature_file_name=? WHERE telegram_id=?""",
+              (drive_file_id, drive_url, file_name, telegram_id))
             self.db.commit()
 
     def add_daily_activity(self, *, telegram_id: int, employee_type: str,
@@ -422,27 +451,36 @@ class Storage:
     def get_report(self, telegram_id: int, report_date: str):
         with self.lock:
             return self.db.execute("""SELECT id,file_name,drive_file_id,drive_url,
-              activity_count,status,generated_at_local,error_message FROM wfh_reports
+              activity_count,status,generated_at_local,error_message,
+              pdf_file_name,pdf_drive_file_id,pdf_drive_url FROM wfh_reports
               WHERE telegram_id=? AND report_date=?""", (telegram_id, report_date)).fetchone()
 
     def latest_report(self, telegram_id: int):
         return self.db.execute("""SELECT report_date,file_name,drive_url,activity_count,status,
-          generated_at_local FROM wfh_reports WHERE telegram_id=? AND status='uploaded'
+          generated_at_local,pdf_file_name,pdf_drive_url
+          FROM wfh_reports WHERE telegram_id=? AND status='uploaded'
           ORDER BY report_date DESC LIMIT 1""", (telegram_id,)).fetchone()
 
     def save_report(self, *, telegram_id: int, report_date: str, file_name: str,
                     drive_file_id: str, drive_url: str, activity_count: int,
-                    generated_at_local: str):
+                    generated_at_local: str, pdf_file_name: str,
+                    pdf_drive_file_id: str, pdf_drive_url: str):
         with self.lock:
             self.db.execute("""INSERT INTO wfh_reports
-              (telegram_id,report_date,file_name,drive_file_id,drive_url,activity_count,
-               status,generated_at_local,error_message) VALUES(?,?,?,?,?,?,'uploaded',?,NULL)
+              (telegram_id,report_date,file_name,drive_file_id,drive_url,
+               pdf_file_name,pdf_drive_file_id,pdf_drive_url,activity_count,
+               status,generated_at_local,error_message)
+              VALUES(?,?,?,?,?,?,?,?,?,'uploaded',?,NULL)
               ON CONFLICT(telegram_id,report_date) DO UPDATE SET
               file_name=excluded.file_name,drive_file_id=excluded.drive_file_id,
-              drive_url=excluded.drive_url,activity_count=excluded.activity_count,
+              drive_url=excluded.drive_url,pdf_file_name=excluded.pdf_file_name,
+              pdf_drive_file_id=excluded.pdf_drive_file_id,
+              pdf_drive_url=excluded.pdf_drive_url,
+              activity_count=excluded.activity_count,
               status='uploaded',generated_at_local=excluded.generated_at_local,
               error_message=NULL""",
               (telegram_id, report_date, file_name, drive_file_id, drive_url,
+               pdf_file_name, pdf_drive_file_id, pdf_drive_url,
                activity_count, generated_at_local))
             self.db.commit()
 

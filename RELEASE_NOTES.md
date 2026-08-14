@@ -1,3 +1,13 @@
+# Versi 22.0.4 - Laporan Word dan PDF
+
+- Laporan WFH dibuat sekaligus dalam format Word dan PDF.
+- Kedua file diunggah ke folder Google Drive pegawai dan diperbarui tanpa duplikasi.
+- Word dan PDF juga dikirim langsung ke chat Telegram setelah proses selesai.
+- Menambahkan menu unggah/ganti tanda tangan PNG per pegawai dan penyimpanan terpisah di Google Drive.
+- Tanda tangan dipangkas, diskalakan proporsional, lalu ditempatkan mengambang sesuai contoh final agar terlihat natural.
+- File sementara tetap dihapus otomatis setelah unggah dan pengiriman.
+- Menambahkan LibreOffice pada konfigurasi build Railway untuk konversi PDF.
+
 # Versi 22.0.3 - Kontrol Manual Generate Laporan WFH
 
 - Admin dapat memilih **Buka Manual**, **Tutup Manual**, atau **Kembali ke Jadwal Jumat** dari menu Kelola Pegawai.

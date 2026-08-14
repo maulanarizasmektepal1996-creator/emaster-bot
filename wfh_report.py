@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
+import io
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -87,6 +91,61 @@ def format_indonesian_date(value: date, include_day: bool = False) -> str:
 
 def report_file_name(report_date: date) -> str:
     return f"Laporan_WFH_{report_date.day}_{MONTH_NAMES[report_date.month]}_{report_date.year}.docx"
+
+
+def report_pdf_file_name(report_date: date) -> str:
+    return f"Laporan_WFH_{report_date.day}_{MONTH_NAMES[report_date.month]}_{report_date.year}.pdf"
+
+
+def convert_docx_to_pdf(docx_path: str | Path, output_dir: str | Path) -> Path:
+    """Konversi DOCX ke PDF memakai LibreOffice pada direktori sementara."""
+    source = Path(docx_path).resolve()
+    if not source.is_file():
+        raise FileNotFoundError("File Word laporan tidak ditemukan untuk konversi PDF.")
+
+    executable = shutil.which("libreoffice") or shutil.which("soffice")
+    if not executable:
+        raise RuntimeError(
+            "Konverter PDF LibreOffice belum terpasang pada server. "
+            "Pastikan konfigurasi Nixpacks ikut dideploy.")
+
+    destination = Path(output_dir).resolve()
+    destination.mkdir(parents=True, exist_ok=True)
+    profile = destination / ".libreoffice-profile"
+    home = destination / ".libreoffice-home"
+    profile.mkdir(parents=True, exist_ok=True)
+    home.mkdir(parents=True, exist_ok=True)
+
+    environment = os.environ.copy()
+    environment["HOME"] = str(home)
+    environment["TMPDIR"] = str(destination)
+    command = [
+        executable,
+        "--headless",
+        f"-env:UserInstallation={profile.as_uri()}",
+        "--convert-to",
+        "pdf:writer_pdf_Export",
+        "--outdir",
+        str(destination),
+        str(source),
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=environment,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Konversi PDF melewati batas waktu 120 detik.") from exc
+
+    output = destination / f"{source.stem}.pdf"
+    if result.returncode != 0 or not output.is_file() or output.stat().st_size == 0:
+        raise RuntimeError(
+            f"Konversi PDF gagal (kode proses {result.returncode}).")
+    return output
 
 
 def _set_run_font(run, *, bold: bool | None = None, color: str | None = None,
@@ -176,6 +235,94 @@ def _add_picture(paragraph, path: Path):
     run.add_picture(str(path), width=Inches(width), height=Inches(height))
 
 
+def _floating_anchor_from_inline(inline, *, horizontal_offset: int,
+                                 vertical_offset: int):
+    """Ubah gambar inline menjadi anchor di depan teks untuk tanda tangan natural."""
+    anchor = OxmlElement("wp:anchor")
+    for name, value in {
+        "distT": "0", "distB": "0", "distL": "0", "distR": "0",
+        "simplePos": "0", "relativeHeight": "251658240", "behindDoc": "0",
+        "locked": "0", "layoutInCell": "1", "allowOverlap": "1",
+    }.items():
+        anchor.set(name, value)
+
+    simple_position = OxmlElement("wp:simplePos")
+    simple_position.set("x", "0")
+    simple_position.set("y", "0")
+    anchor.append(simple_position)
+
+    position_horizontal = OxmlElement("wp:positionH")
+    position_horizontal.set("relativeFrom", "column")
+    horizontal = OxmlElement("wp:posOffset")
+    horizontal.text = str(horizontal_offset)
+    position_horizontal.append(horizontal)
+    anchor.append(position_horizontal)
+
+    position_vertical = OxmlElement("wp:positionV")
+    position_vertical.set("relativeFrom", "paragraph")
+    vertical = OxmlElement("wp:posOffset")
+    vertical.text = str(vertical_offset)
+    position_vertical.append(vertical)
+    anchor.append(position_vertical)
+
+    extent = inline.find(qn("wp:extent"))
+    effect_extent = inline.find(qn("wp:effectExtent"))
+    document_properties = inline.find(qn("wp:docPr"))
+    frame_properties = inline.find(qn("wp:cNvGraphicFramePr"))
+    graphic = inline.find(qn("a:graphic"))
+    if any(item is None for item in (
+            extent, document_properties, frame_properties, graphic)):
+        raise ValueError("Struktur gambar tanda tangan tidak valid.")
+    anchor.append(extent)
+    if effect_extent is None:
+        effect_extent = OxmlElement("wp:effectExtent")
+        for name in ("l", "t", "r", "b"):
+            effect_extent.set(name, "0")
+    anchor.append(effect_extent)
+    anchor.append(OxmlElement("wp:wrapNone"))
+    document_properties.set("name", "Tanda Tangan Pegawai")
+    document_properties.set("descr", "Tanda tangan pegawai")
+    anchor.append(document_properties)
+    anchor.append(frame_properties)
+    anchor.append(graphic)
+    inline.getparent().replace(inline, anchor)
+
+
+def _add_floating_signature(paragraph, path: Path):
+    """Pangkas margin transparan dan pasang tanda tangan mengikuti contoh final."""
+    with Image.open(path) as image:
+        rgba = image.convert("RGBA")
+    alpha_box = rgba.getchannel("A").getbbox()
+    if alpha_box is None:
+        raise ValueError("PNG tanda tangan tidak memiliki gambar yang terlihat.")
+    left, top, right, bottom = alpha_box
+    padding = max(8, int(max(right - left, bottom - top) * 0.03))
+    cropped = rgba.crop((
+        max(0, left - padding), max(0, top - padding),
+        min(rgba.width, right + padding), min(rgba.height, bottom + padding),
+    ))
+    width_px, height_px = cropped.size
+    ratio = width_px / height_px
+    max_width = 1.174
+    max_height = 1.107
+    if max_width / ratio <= max_height:
+        width, height = max_width, max_width / ratio
+    else:
+        height, width = max_height, max_height * ratio
+
+    signature_stream = io.BytesIO()
+    cropped.save(signature_stream, format="PNG", optimize=True)
+    signature_stream.seek(0)
+    drawing = paragraph.add_run().add_picture(
+        signature_stream, width=Inches(width), height=Inches(height))
+    inline = drawing._inline
+    _floating_anchor_from_inline(
+        inline,
+        horizontal_offset=455960,
+        vertical_offset=73439,
+    )
+
+
 def _repeat_table_header(row):
     properties = row._tr.get_or_add_trPr()
     header = properties.find(qn("w:tblHeader"))
@@ -188,7 +335,8 @@ def _repeat_table_header(row):
 def build_wfh_report(*, template_path: str | Path, output_path: str | Path,
                      employee_name: str, employee_identifier: str,
                      employee_type: str, position: str, unit_name: str,
-                     report_date: date, activities: list[ReportActivity]) -> Path:
+                     report_date: date, activities: list[ReportActivity],
+                     signature_path: str | Path | None = None) -> Path:
     template = Path(template_path)
     if not template.is_file():
         raise FileNotFoundError("Template laporan WFH tidak ditemukan.")
@@ -216,12 +364,14 @@ def build_wfh_report(*, template_path: str | Path, output_path: str | Path,
             _set_cell_text(row.cells[1], ":", WD_ALIGN_PARAGRAPH.CENTER)
             _set_cell_text(row.cells[2], values[canonical_label], WD_ALIGN_PARAGRAPH.LEFT)
 
+    signature_anchor_paragraph = None
     for paragraph in document.paragraphs:
         text = paragraph.text.strip()
         if "JEJAK ASN" in text:
             paragraph.text = text.replace("JEJAK ASN", "E-MASTER JATIM")
         elif re.match(r"^Surabaya,\s+", text, flags=re.IGNORECASE):
             paragraph.text = f"Surabaya, {format_indonesian_date(report_date)}"
+            signature_anchor_paragraph = paragraph
         elif (text.upper().startswith("NIP.") or text.upper().startswith("ID PEGAWAI.")
               or "[[IDENTIFIER_LABEL]]" in text):
             paragraph.text = f"{identifier_label}. {employee_identifier}"
@@ -229,6 +379,14 @@ def build_wfh_report(*, template_path: str | Path, output_path: str | Path,
             paragraph.text = employee_name
         if paragraph.text.strip():
             _format_paragraph(paragraph, paragraph.alignment)
+
+    if signature_path:
+        signature = Path(signature_path)
+        if not signature.is_file():
+            raise FileNotFoundError("File tanda tangan pegawai tidak ditemukan.")
+        if signature_anchor_paragraph is None:
+            raise ValueError("Posisi tanda tangan pada template tidak ditemukan.")
+        _add_floating_signature(signature_anchor_paragraph, signature)
 
     for section in document.sections:
         for paragraph in section.footer.paragraphs:

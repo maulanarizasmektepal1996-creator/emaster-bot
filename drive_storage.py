@@ -182,6 +182,9 @@ class GoogleDriveStorage:
         month_id = self.ensure_folder(employee_folder_id, INDONESIAN_MONTHS[month])
         return self.ensure_folder(month_id, "Laporan WFH")
 
+    def signature_folder(self, employee_folder_id: str) -> str:
+        return self.ensure_folder(employee_folder_id, "Tanda Tangan")
+
     def upload_bytes(self, *, content: bytes, file_name: str, mime_type: str,
                      parent_id: str) -> tuple[str, str]:
         try:
@@ -208,7 +211,7 @@ class GoogleDriveStorage:
                 try:
                     item = self._get_service().files().update(
                         fileId=existing_file_id,
-                        body={"name": safe_drive_name(file_name, "Laporan_WFH.docx")},
+                        body={"name": safe_drive_name(file_name, "Laporan_WFH")},
                         media_body=media,
                         fields="id,webViewLink",
                         supportsAllDrives=True,
@@ -220,7 +223,7 @@ class GoogleDriveStorage:
             if not existing_file_id:
                 media = MediaFileUpload(str(local_path), mimetype=mime_type, resumable=False)
                 item = self._get_service().files().create(
-                    body={"name": safe_drive_name(file_name, "Laporan_WFH.docx"),
+                    body={"name": safe_drive_name(file_name, "Laporan_WFH"),
                           "parents": [parent_id]},
                     media_body=media,
                     fields="id,webViewLink",
@@ -245,4 +248,4 @@ class GoogleDriveStorage:
             target.write_bytes(buffer.getvalue())
             return target
         except Exception as exc:
-            raise DriveStorageError("Bukti foto gagal diunduh untuk laporan.") from exc
+            raise DriveStorageError("File Google Drive gagal diunduh.") from exc

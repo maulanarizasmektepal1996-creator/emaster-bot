@@ -1,4 +1,4 @@
-# E-Master Jatim Bot v22.0.3 (ASN, Non-ASN, Drive, dan Laporan WFH)
+# E-Master Jatim Bot v22.0.4 (ASN, Non-ASN, Drive, dan Laporan WFH)
 
 Bot admin-terkelola untuk mencari Kamus Aktivitas Disbudpar, menghitung WPT, meminta konfirmasi, lalu mengirim aktivitas ke akun e‑Master masing-masing pegawai.
 
@@ -40,7 +40,11 @@ Pegawai Non-ASN memakai jurnal harian lokal tanpa login e-Master. Semua pegawai 
 - Input aktivitas berupa teks atau sampai lima foto dengan caption dan konfirmasi sebelum simpan.
 - Perapian dasar tanpa AI: spasi, huruf awal, dan tanda baca akhir.
 - Bukti foto otomatis dengan retry jika koneksi Drive terganggu.
-- Laporan WFH Word berformat Arial 12 dengan foto proporsional dan hyperlink Lihat File.
+- Laporan WFH dibuat sekaligus dalam format Word dan PDF.
+- Word dan PDF diunggah ke Google Drive serta dikirim langsung ke chat Telegram pegawai.
+- Laporan Word berformat Arial 12 dengan foto proporsional dan hyperlink Lihat File.
+- Setiap pegawai dapat mengunggah atau mengganti tanda tangan PNG miliknya dari menu utama.
+- Tanda tangan disimpan terpisah per pegawai, dipangkas otomatis, dan dimasukkan proporsional ke Word serta PDF.
 - Generate Laporan WFH khusus Jumat pukul 00.00–23.59 WIB (Asia/Jakarta).
 - Admin dapat membuka, menutup, atau mengembalikan generate laporan ke jadwal Jumat melalui menu Kelola Pegawai.
 - File laporan diperbarui pada Google Drive dan file sementara Railway dihapus otomatis.
@@ -137,6 +141,7 @@ e‑Master kedaluwarsa, bot akan membersihkan cookie lama secara otomatis saat
 3. Tambahkan Railway Volume dan mount ke `/data`.
 4. Buka **Variables**, lalu isi semua variabel pada `.env.example`.
 5. Railway akan menjalankan worker menggunakan `python main.py`.
+   Pastikan `nixpacks.toml` ikut diunggah karena file tersebut memasang LibreOffice untuk konversi PDF.
 6. Buka Telegram: `/start`, kemudian `/login`.
 7. Saat diminta, kirim OTP 6 digit. Pesan OTP akan berusaha dihapus segera setelah diproses.
 8. Jalankan `/tambah` untuk uji satu aktivitas.
@@ -174,7 +179,8 @@ Struktur dibuat otomatis tanpa ditampilkan pada dashboard pengguna:
 Nama Pegawai/
 ├── Agustus/
 │   ├── 14/                  # foto aktivitas tanggal 14
-│   └── Laporan WFH/         # file Word laporan
+│   └── Laporan WFH/         # file Word dan PDF laporan
+└── Tanda Tangan/             # PNG tanda tangan khusus pegawai
 ```
 
 Untuk membuat Base64 pada macOS/Linux:
@@ -199,6 +205,9 @@ Jangan mengirim token bot, password, OTP, `ENCRYPTION_KEY`, atau JSON Service Ac
 - Mode **Buka Manual** mengizinkan generate di luar hari Jumat, tetapi tetap memakai aktivitas Jumat terakhir yang dikirim pada Jumat tersebut.
 - Mode **Tutup Manual** menolak generate termasuk pada hari Jumat; mode **Otomatis** mengembalikan jadwal normal.
 - Generate ulang sebelum batas waktu memperbarui file Drive yang sama.
+- Word dan PDF disimpan pada folder laporan yang sama dan keduanya dikirim ke Telegram.
+- Jika tanda tangan PNG sudah diunggah melalui menu **Tanda Tangan**, gambar tersebut dimasukkan otomatis ke Word dan PDF.
+- Ukuran tanda tangan mengikuti kotak proporsional acuan dan boleh sedikit menutupi tanggal atau nama agar terlihat natural.
 - Laporan lama tetap dapat dibuka setelah periode generate ditutup.
 - Foto ditampilkan dengan rasio asli dan tidak dipotong. Teks `Lihat File` mengarah ke file bukti terkait.
 

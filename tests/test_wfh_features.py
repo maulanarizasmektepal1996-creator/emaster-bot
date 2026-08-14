@@ -1,19 +1,22 @@
 import sqlite3
+import shutil
 import tempfile
 import unittest
+from zipfile import ZipFile
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from drive_storage import safe_drive_name
 from storage import Storage
 from wfh_report import (EvidenceFile, ReportActivity, build_wfh_report,
+                        convert_docx_to_pdf,
                         report_date_for_access, report_generation_allowed,
-                        report_window_open, tidy_sentence)
+                        report_pdf_file_name, report_window_open, tidy_sentence)
 
 
 JAKARTA = ZoneInfo("Asia/Jakarta")
@@ -114,6 +117,52 @@ class DailyStorageTests(unittest.TestCase):
         self.assertEqual("PEGAWAI LAMA", user[3])
         self.assertEqual("asn", user[8])
         self.assertEqual("Pemasaran", user[9])
+        self.assertIsNone(user[11])
+
+    def test_report_storage_keeps_word_and_pdf_drive_links(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = Storage(str(Path(tmp) / "reports.db"))
+            storage.save_report(
+                telegram_id=2001, report_date="2026-08-14",
+                file_name="laporan.docx", drive_file_id="word-id",
+                drive_url="https://drive.google.com/word",
+                pdf_file_name="laporan.pdf", pdf_drive_file_id="pdf-id",
+                pdf_drive_url="https://drive.google.com/pdf",
+                activity_count=2,
+                generated_at_local="2026-08-14T20:00:00+07:00")
+            report = storage.get_report(2001, "2026-08-14")
+            latest = storage.latest_report(2001)
+        self.assertEqual("laporan.docx", report[1])
+        self.assertEqual("laporan.pdf", report[8])
+        self.assertEqual("pdf-id", report[9])
+        self.assertEqual("https://drive.google.com/pdf", report[10])
+        self.assertEqual("https://drive.google.com/pdf", latest[7])
+
+    def test_old_report_table_gains_pdf_columns_without_losing_word_link(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy-reports.db"
+            db = sqlite3.connect(path)
+            db.execute("""CREATE TABLE wfh_reports (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER NOT NULL,
+              report_date TEXT NOT NULL, file_name TEXT NOT NULL,
+              drive_file_id TEXT, drive_url TEXT,
+              activity_count INTEGER NOT NULL DEFAULT 0,
+              status TEXT NOT NULL DEFAULT 'pending', generated_at_local TEXT,
+              error_message TEXT, UNIQUE(telegram_id,report_date))""")
+            db.execute("""INSERT INTO wfh_reports
+              (telegram_id,report_date,file_name,drive_file_id,drive_url,status)
+              VALUES(2001,'2026-08-14','lama.docx','old-word-id',
+                     'https://drive.google.com/old-word','uploaded')""")
+            db.commit()
+            db.close()
+            storage = Storage(str(path))
+            report = storage.get_report(2001, "2026-08-14")
+            columns = {row[1] for row in storage.db.execute(
+                "PRAGMA table_info(wfh_reports)")}
+        self.assertEqual("old-word-id", report[2])
+        self.assertIsNone(report[9])
+        self.assertTrue({"pdf_file_name", "pdf_drive_file_id", "pdf_drive_url"}
+                        .issubset(columns))
 
 
 class WfhDocumentTests(unittest.TestCase):
@@ -173,6 +222,51 @@ class WfhDocumentTests(unittest.TestCase):
         self.assertEqual("ID Pegawai", profile.cell(1, 0).text)
         self.assertEqual("NIK-001", profile.cell(1, 2).text)
         self.assertIn("ID Pegawai. NIK-001", signature)
+
+    def test_signature_is_proportional_floating_and_overlapping_naturally(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp = Path(tmp)
+            signature = temp / "signature.png"
+            image = Image.new("RGBA", (900, 500), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(image)
+            draw.line([(120, 400), (280, 80), (420, 410), (760, 120)],
+                      fill=(0, 0, 0, 255), width=16)
+            image.save(signature)
+            output = temp / "signed.docx"
+            build_wfh_report(
+                template_path=ROOT / "templates" / "Laporan_WFH_template.docx",
+                output_path=output,
+                employee_name="PEGAWAI UJI", employee_identifier="199000000000000001",
+                employee_type="asn", position="Jabatan Uji", unit_name="Pemasaran",
+                report_date=datetime(2026, 8, 14).date(),
+                activities=[ReportActivity("10:00:00", "Mengikuti rapat internal.")],
+                signature_path=signature,
+            )
+            with ZipFile(output) as package:
+                document_xml = package.read("word/document.xml").decode("utf-8")
+        self.assertIn("<wp:anchor", document_xml)
+        self.assertIn("<wp:wrapNone", document_xml)
+        self.assertIn("Tanda Tangan Pegawai", document_xml)
+
+    @unittest.skipUnless(shutil.which("libreoffice") or shutil.which("soffice"),
+                         "LibreOffice tidak tersedia")
+    def test_word_report_converts_to_valid_pdf(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp = Path(tmp)
+            word_path = temp / "laporan.docx"
+            build_wfh_report(
+                template_path=ROOT / "templates" / "Laporan_WFH_template.docx",
+                output_path=word_path,
+                employee_name="PEGAWAI UJI", employee_identifier="199000000000000001",
+                employee_type="asn", position="Jabatan Uji", unit_name="Pemasaran",
+                report_date=datetime(2026, 8, 14).date(),
+                activities=[ReportActivity("10:00:00", "Mengikuti rapat internal.")],
+            )
+            pdf_path = convert_docx_to_pdf(word_path, temp)
+            pdf_bytes = pdf_path.read_bytes()
+        self.assertTrue(pdf_bytes.startswith(b"%PDF"))
+        self.assertEqual("Laporan_WFH_14_Agustus_2026.pdf",
+                         report_pdf_file_name(datetime(2026, 8, 14).date()))
 
 
 if __name__ == "__main__":
