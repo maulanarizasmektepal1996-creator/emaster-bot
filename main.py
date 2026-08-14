@@ -24,8 +24,8 @@ from drive_storage import DriveStorageError, GoogleDriveStorage
 from staff_directory import LocalStaffDirectory, StaffDirectoryError
 from storage import Storage
 from wfh_report import (EvidenceFile, ReportActivity, build_wfh_report,
-                        format_indonesian_date, now_jakarta, report_file_name,
-                        report_window_open, tidy_sentence)
+                        format_indonesian_date, now_jakarta, report_date_for_access,
+                        report_file_name, report_generation_allowed, tidy_sentence)
 
 load_dotenv()
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
@@ -93,7 +93,7 @@ def normalize_text(value: str) -> str:
 
 
 def current_activity_period() -> tuple[datetime, datetime]:
-    first = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    first = now_jakarta().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     if first.month == 12:
         next_month = first.replace(year=first.year + 1, month=1)
     else:
@@ -369,7 +369,7 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     storage.delete_draft(update.effective_user.id)
     first, last = current_activity_period()
     quick_buttons = [InlineKeyboardButton("📍 Hari Ini", callback_data="date:today")]
-    if datetime.now().day > 1:
+    if now_jakarta().day > 1:
         quick_buttons.append(InlineKeyboardButton("↩️ Kemarin", callback_data="date:yesterday"))
     kb = InlineKeyboardMarkup([
         quick_buttons,
@@ -465,7 +465,8 @@ async def quick_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         storage.delete_draft(update.effective_user.id)
         await query.edit_message_text("❌ Pengisian dibatalkan.")
         return ConversationHandler.END
-    date = datetime.now() if action == "today" else datetime.now() - timedelta(days=1)
+    moment = now_jakarta()
+    date = moment if action == "today" else moment - timedelta(days=1)
     try:
         date = parse_activity_date(date.strftime("%d/%m/%Y"))
     except ValueError as exc:
@@ -1087,7 +1088,7 @@ async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         await update.callback_query.answer()
     message = update.effective_message
-    now = datetime.now()
+    now = now_jakarta()
     user = storage.get_user(update.effective_user.id)
     if employee_type(user) == "non_asn":
         month_prefix = now_jakarta().strftime("%Y-%m")
@@ -1142,7 +1143,8 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = await message.reply_text("⏳ Mengambil riwayat terbaru langsung dari e‑Master…")
     try:
         client = get_client(update.effective_user.id)
-        rows = await asyncio.to_thread(client.list_activities, datetime.now().strftime("%m"), 200)
+        rows = await asyncio.to_thread(
+            client.list_activities, now_jakarta().strftime("%m"), 200)
     except AuthenticationRequired:
         await status.edit_text("🔐 Sesi e‑Master habis. Jalankan /login, lalu buka Riwayat kembali.")
         return
@@ -1163,7 +1165,7 @@ def build_history_page(rows: list[EMasterActivity], requested_page: int):
     page = min(max(0, requested_page), page_count - 1)
     start = page * HISTORY_PAGE_SIZE
     end = min(total, start + HISTORY_PAGE_SIZE)
-    lines = [f"🕘 RIWAYAT E‑MASTER — {datetime.now():%m/%Y}", "━━━━━━━━━━━━━━━━━━━━"]
+    lines = [f"🕘 RIWAYAT E‑MASTER — {now_jakarta():%m/%Y}", "━━━━━━━━━━━━━━━━━━━━"]
     buttons = []
     for index, item in enumerate(rows[start:end], start=start):
         detail = item.detail if len(item.detail) <= 80 else item.detail[:77] + "…"
@@ -1842,7 +1844,8 @@ async def help_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         "❓ BANTUAN\n━━━━━━━━━━━━━━━━━━━━\n"
         f"• Tambah Aktivitas: {detail}\n"
-        "• Laporan WFH hanya dapat dibuat pada hari Jumat sampai pukul 23.59 WIB.\n"
+        "• Secara otomatis Laporan WFH dapat dibuat pada Jumat sampai pukul 23.59 WIB; "
+        "admin dapat membuka atau menutup generate secara manual.\n"
         "• Aktivitas laporan harus memiliki tanggal Jumat dan benar-benar dikirim pada Jumat tersebut.\n"
         "• Jika foto gagal diproses, gunakan tombol Coba Lagi Foto.\n"
         "• Uraian hanya dirapikan secara dasar tanpa layanan AI.",
@@ -1850,8 +1853,7 @@ async def help_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🏠 Menu Utama", callback_data="menu:home")]]))
 
 
-def _generate_report_sync(user, moment: datetime):
-    report_date = moment.date()
+def _generate_report_sync(user, moment: datetime, report_date):
     rows = storage.list_wfh_activities(user[0], report_date.isoformat())
     if not rows:
         return None
@@ -1913,16 +1915,20 @@ async def generate_wfh_report(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.answer()
     moment = now_jakarta()
     user = storage.get_user(update.effective_user.id)
-    if not report_window_open(moment):
+    access_mode = storage.wfh_report_access_mode()
+    if not report_generation_allowed(moment, access_mode):
         latest = storage.latest_report(user[0])
         buttons = [[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu:home")]]
         if latest and latest[2]:
             buttons.insert(0, [InlineKeyboardButton("📄 Buka Laporan Terakhir", url=latest[2])])
+        reason = ("Generate Laporan WFH sedang ditutup secara manual oleh admin."
+                  if access_mode == "closed" else
+                  "Laporan hanya dapat dibuat setiap hari Jumat sampai pukul 23.59 WIB.")
         await update.effective_message.reply_text(
-            "⛔ PERIODE LAPORAN WFH DITUTUP\n\n"
-            "Laporan hanya dapat dibuat setiap hari Jumat sampai pukul 23.59 WIB.",
+            f"⛔ PERIODE LAPORAN WFH DITUTUP\n\n{reason}",
             reply_markup=InlineKeyboardMarkup(buttons))
         return
+    report_date = report_date_for_access(moment, access_mode)
     report_lock = report_locks.setdefault(user[0], asyncio.Lock())
     if report_lock.locked():
         await update.effective_message.reply_text(
@@ -1932,16 +1938,18 @@ async def generate_wfh_report(update: Update, context: ContextTypes.DEFAULT_TYPE
         "⏳ Menyiapkan Laporan WFH. Mohon tunggu dan jangan menekan tombol berulang kali…")
     async with report_lock:
         try:
-            result = await asyncio.to_thread(_generate_report_sync, user, moment)
+            result = await asyncio.to_thread(
+                _generate_report_sync, user, moment, report_date)
             if not result:
                 await status.edit_text(
-                    "ℹ️ Belum ada aktivitas yang memenuhi syarat untuk Laporan WFH hari ini.\n\n"
-                    "Aktivitas harus bertanggal Jumat dan dikirim pada hari Jumat yang sama.")
+                    "ℹ️ Belum ada aktivitas yang memenuhi syarat untuk Laporan WFH.\n\n"
+                    f"Aktivitas harus bertanggal {format_indonesian_date(report_date)} "
+                    "dan dikirim pada tanggal yang sama.")
                 return
             file_name, file_url, count = result
             await status.edit_text(
                 "✅ LAPORAN WFH BERHASIL DIBUAT\n\n"
-                f"📅 {format_indonesian_date(moment.date())}\n"
+                f"📅 Periode: {format_indonesian_date(report_date)}\n"
                 f"📝 Jumlah aktivitas: {count}\n"
                 f"📄 Nama file: {file_name}",
                 reply_markup=InlineKeyboardMarkup([
@@ -1949,12 +1957,12 @@ async def generate_wfh_report(update: Update, context: ContextTypes.DEFAULT_TYPE
                     [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu:home")],
                 ]))
         except Exception as exc:
-            file_name = report_file_name(moment.date())
-            storage.save_report_error(user[0], moment.date().isoformat(), file_name, str(exc))
+            file_name = report_file_name(report_date)
+            storage.save_report_error(user[0], report_date.isoformat(), file_name, str(exc))
             logging.exception("Pembuatan laporan WFH gagal untuk Telegram ID %s", user[0])
             message = str(exc) if isinstance(exc, DriveStorageError) else "Laporan belum dapat dibuat."
             await status.edit_text(
-                f"❌ {message}\nData aktivitas tetap aman. Silakan coba kembali sebelum pukul 23.59 WIB.")
+                f"❌ {message}\nData aktivitas tetap aman. Silakan coba kembali saat akses laporan dibuka.")
 
 
 @private
@@ -2125,6 +2133,24 @@ async def users_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buttons.append([InlineKeyboardButton(
         "✅ Selesaikan Maintenance" if maintenance else "🔧 Mulai Maintenance",
         callback_data="admin:maintenance:off" if maintenance else "admin:maintenance:on")])
+    report_mode = storage.wfh_report_access_mode()
+    report_labels = {
+        "auto": "OTOMATIS — Jumat 00.00–23.59 WIB",
+        "open": "DIBUKA MANUAL",
+        "closed": "DITUTUP MANUAL",
+    }
+    text.append(f"\n📄 Generate Laporan WFH: {report_labels[report_mode]}")
+    buttons.extend([
+        [InlineKeyboardButton(
+            "✅ Buka Manual" if report_mode != "open" else "✅ Dibuka Manual",
+            callback_data="admin:report:open"),
+         InlineKeyboardButton(
+            "⛔ Tutup Manual" if report_mode != "closed" else "⛔ Ditutup Manual",
+            callback_data="admin:report:closed")],
+        [InlineKeyboardButton(
+            "🗓 Kembali ke Jadwal Jumat",
+            callback_data="admin:report:auto")],
+    ])
     for tid, nip, name, status, is_admin, kind in rows:
         icon = "👑" if is_admin else ("✅" if status == "active" else "⏳" if status == "invited" else "⛔")
         type_label = "ASN" if kind == "asn" else "Non-ASN"
@@ -2154,6 +2180,39 @@ async def broadcast_notification(application: Application, text: str):
             logging.info("Notifikasi sistem tidak terkirim ke Telegram ID %s", telegram_id)
         await asyncio.sleep(0.04)
     return delivered
+
+
+async def report_access_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not admin_only(update):
+        await query.edit_message_text("⛔ Khusus admin.")
+        return
+    mode = query.data.rsplit(":", 1)[1]
+    storage.set_wfh_report_access_mode(mode)
+    moment = now_jakarta()
+    if mode == "open":
+        report_date = report_date_for_access(moment, mode)
+        notice = (
+            "✅ GENERATE LAPORAN WFH DIBUKA\n\n"
+            f"Admin membuka generate manual untuk periode "
+            f"{format_indonesian_date(report_date)}. Gunakan /laporan untuk membuat laporan.")
+        confirmation = f"✅ Generate manual dibuka untuk periode {format_indonesian_date(report_date)}."
+    elif mode == "closed":
+        notice = (
+            "⛔ GENERATE LAPORAN WFH DITUTUP\n\n"
+            "Admin menutup sementara pembuatan laporan. Laporan terakhir tetap dapat dibuka.")
+        confirmation = "⛔ Generate Laporan WFH ditutup secara manual."
+    else:
+        notice = (
+            "🗓 JADWAL LAPORAN WFH OTOMATIS\n\n"
+            "Generate laporan kembali mengikuti jadwal Jumat pukul 00.00–23.59 WIB.")
+        confirmation = "🗓 Generate laporan kembali mengikuti jadwal Jumat."
+    delivered = await broadcast_notification(context.application, notice)
+    await query.edit_message_text(
+        f"{confirmation}\nNotifikasi dikirim kepada {delivered} pengguna aktif.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+            "👥 Kembali", callback_data="menu:users")]]))
 
 
 async def maintenance_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2360,6 +2419,8 @@ def main():
     app.add_handler(CallbackQueryHandler(disable_employee, pattern=r"^admin:disable:\d+$"))
     app.add_handler(CallbackQueryHandler(
         maintenance_toggle, pattern=r"^admin:maintenance:(?:on|off)$"))
+    app.add_handler(CallbackQueryHandler(
+        report_access_toggle, pattern=r"^admin:report:(?:auto|open|closed)$"))
     app.add_handler(CallbackQueryHandler(stale_button))
     app.add_error_handler(on_error)
     app.run_polling(drop_pending_updates=False)

@@ -1,3 +1,14 @@
+# Versi 22.0.3 - Kontrol Manual Generate Laporan WFH
+
+- Admin dapat memilih **Buka Manual**, **Tutup Manual**, atau **Kembali ke Jadwal Jumat** dari menu Kelola Pegawai.
+- Buka manual di luar hari Jumat tetap menghasilkan laporan untuk Jumat terakhir, sehingga aturan isi laporan tidak berubah.
+- Perubahan mode disimpan di database dan diberitahukan kepada pengguna aktif.
+
+# Versi 22.0.2 - Koreksi Zona Waktu Railway
+
+- Seluruh pilihan tanggal cepat, periode aktivitas, dashboard, dan riwayat kini selalu memakai zona waktu **Asia/Jakarta**.
+- Memperbaiki tombol **Hari Ini** yang masih memilih tanggal kemarin setelah lewat tengah malam WIB pada server Railway yang berjalan dalam UTC.
+
 # Versi 22.0.1 - Koreksi Jadwal Laporan WFH
 
 - Mengubah jadwal generate Laporan WFH dari Rabu menjadi **Jumat pukul 00.00–23.59.59 WIB**.

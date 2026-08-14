@@ -471,6 +471,15 @@ class Storage:
     def maintenance_active(self) -> bool:
         return self.get_setting("maintenance_active", "0") == "1"
 
+    def wfh_report_access_mode(self) -> str:
+        mode = self.get_setting("wfh_report_access_mode", "auto") or "auto"
+        return mode if mode in {"auto", "open", "closed"} else "auto"
+
+    def set_wfh_report_access_mode(self, mode: str):
+        if mode not in {"auto", "open", "closed"}:
+            raise ValueError("Mode akses laporan WFH tidak valid")
+        self.set_setting("wfh_report_access_mode", mode)
+
     def list_notification_user_ids(self):
         return [int(row[0]) for row in self.db.execute(
             "SELECT telegram_id FROM users WHERE status='active' ORDER BY telegram_id").fetchall()]

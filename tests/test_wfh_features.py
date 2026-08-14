@@ -12,6 +12,7 @@ from PIL import Image
 from drive_storage import safe_drive_name
 from storage import Storage
 from wfh_report import (EvidenceFile, ReportActivity, build_wfh_report,
+                        report_date_for_access, report_generation_allowed,
                         report_window_open, tidy_sentence)
 
 
@@ -32,8 +33,27 @@ class FridayWindowTests(unittest.TestCase):
         self.assertEqual("Mengikuti rapat internal.",
                          tidy_sentence("  mengikuti   rapat internal "))
 
+    def test_main_never_uses_naive_railway_server_clock(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        self.assertNotIn("datetime.now()", source)
+
+    def test_admin_can_override_friday_window(self):
+        saturday = datetime(2026, 8, 15, 9, 0, tzinfo=JAKARTA)
+        friday = datetime(2026, 8, 14, 9, 0, tzinfo=JAKARTA)
+        self.assertTrue(report_generation_allowed(saturday, "open"))
+        self.assertFalse(report_generation_allowed(friday, "closed"))
+        self.assertFalse(report_generation_allowed(saturday, "auto"))
+        self.assertEqual(friday.date(), report_date_for_access(saturday, "open"))
+
 
 class DailyStorageTests(unittest.TestCase):
+    def test_report_access_mode_defaults_to_auto_and_persists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = Storage(str(Path(tmp) / "settings.db"))
+            self.assertEqual("auto", storage.wfh_report_access_mode())
+            storage.set_wfh_report_access_mode("open")
+            self.assertEqual("open", storage.wfh_report_access_mode())
+
     def test_non_asn_is_active_without_password(self):
         with tempfile.TemporaryDirectory() as tmp:
             storage = Storage(str(Path(tmp) / "non-asn.db"))

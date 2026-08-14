@@ -1,4 +1,4 @@
-# E-Master Jatim Bot v22.0.1 (ASN, Non-ASN, Drive, dan Laporan WFH)
+# E-Master Jatim Bot v22.0.3 (ASN, Non-ASN, Drive, dan Laporan WFH)
 
 Bot admin-terkelola untuk mencari Kamus Aktivitas Disbudpar, menghitung WPT, meminta konfirmasi, lalu mengirim aktivitas ke akun e‑Master masing-masing pegawai.
 
@@ -42,6 +42,7 @@ Pegawai Non-ASN memakai jurnal harian lokal tanpa login e-Master. Semua pegawai 
 - Bukti foto otomatis dengan retry jika koneksi Drive terganggu.
 - Laporan WFH Word berformat Arial 12 dengan foto proporsional dan hyperlink Lihat File.
 - Generate Laporan WFH khusus Jumat pukul 00.00–23.59 WIB (Asia/Jakarta).
+- Admin dapat membuka, menutup, atau mengembalikan generate laporan ke jadwal Jumat melalui menu Kelola Pegawai.
 - File laporan diperbarui pada Google Drive dan file sementara Railway dihapus otomatis.
 - Mode maintenance dengan notifikasi mulai dan selesai kepada pengguna aktif.
 
@@ -195,6 +196,8 @@ Jangan mengirim token bot, password, OTP, `ENCRYPTION_KEY`, atau JSON Service Ac
 - Tombol generate hanya aktif pada hari Jumat berdasarkan zona `Asia/Jakarta`.
 - Batas waktu adalah Jumat pukul 23.59.59 WIB; mulai Sabtu pukul 00.00 laporan baru ditolak.
 - Hanya aktivitas bertanggal Jumat dan dikirim pada Jumat yang sama yang masuk laporan.
+- Mode **Buka Manual** mengizinkan generate di luar hari Jumat, tetapi tetap memakai aktivitas Jumat terakhir yang dikirim pada Jumat tersebut.
+- Mode **Tutup Manual** menolak generate termasuk pada hari Jumat; mode **Otomatis** mengembalikan jadwal normal.
 - Generate ulang sebelum batas waktu memperbarui file Drive yang sama.
 - Laporan lama tetap dapat dibuka setelah periode generate ditutup.
 - Foto ditampilkan dengan rasio asli dan tidak dipotong. Teks `Lihat File` mengarah ke file bukti terkait.

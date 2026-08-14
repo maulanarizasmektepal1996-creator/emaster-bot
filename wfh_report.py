@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -49,6 +49,24 @@ def report_window_open(moment: datetime | None = None) -> bool:
     else:
         moment = moment.astimezone(JAKARTA)
     return moment.weekday() == 4  # Jumat, 00.00.00 sampai 23.59.59 WIB.
+
+
+def report_generation_allowed(moment: datetime, access_mode: str = "auto") -> bool:
+    """Terapkan jadwal Jumat atau override buka/tutup dari admin."""
+    if access_mode == "open":
+        return True
+    if access_mode == "closed":
+        return False
+    return report_window_open(moment)
+
+
+def report_date_for_access(moment: datetime, access_mode: str = "auto") -> date:
+    """Mode manual tetap mengarah ke Jumat terakhir, bukan tanggal server saat ini."""
+    local_moment = moment if moment.tzinfo is None else moment.astimezone(JAKARTA)
+    if access_mode == "open":
+        days_since_friday = (local_moment.weekday() - 4) % 7
+        return (local_moment - timedelta(days=days_since_friday)).date()
+    return local_moment.date()
 
 
 def tidy_sentence(value: str) -> str:
