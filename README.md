@@ -1,6 +1,8 @@
-# Bot Telegram Aktivitas e‑Master (Multipegawai)
+# E-Master Jatim Bot v22.0.1 (ASN, Non-ASN, Drive, dan Laporan WFH)
 
 Bot admin-terkelola untuk mencari Kamus Aktivitas Disbudpar, menghitung WPT, meminta konfirmasi, lalu mengirim aktivitas ke akun e‑Master masing-masing pegawai.
+
+Pegawai Non-ASN memakai jurnal harian lokal tanpa login e-Master. Semua pegawai dapat mengirim teks atau foto dengan caption. Foto bukti serta Laporan WFH disimpan pada Google Drive agar file tidak menetap pada penyimpanan sementara Railway.
 
 ## Fitur
 
@@ -34,6 +36,14 @@ Bot admin-terkelola untuk mencari Kamus Aktivitas Disbudpar, menghitung WPT, mem
 - Draf tersimpan per pegawai dan dapat dilanjutkan setelah login OTP atau sesi kedaluwarsa.
 - Semua callback lama selalu diberi respons agar tombol kedaluwarsa tidak terlihat macet.
 - Tombol Tambah Lagi setelah aktivitas berhasil disimpan.
+- Jenis akun ASN dan Non-ASN yang ditentukan admin.
+- Input aktivitas berupa teks atau sampai lima foto dengan caption dan konfirmasi sebelum simpan.
+- Perapian dasar tanpa AI: spasi, huruf awal, dan tanda baca akhir.
+- Bukti foto otomatis dengan retry jika koneksi Drive terganggu.
+- Laporan WFH Word berformat Arial 12 dengan foto proporsional dan hyperlink Lihat File.
+- Generate Laporan WFH khusus Jumat pukul 00.00–23.59 WIB (Asia/Jakarta).
+- File laporan diperbarui pada Google Drive dan file sementara Railway dihapus otomatis.
+- Mode maintenance dengan notifikasi mulai dan selesai kepada pengguna aktif.
 
 ## Perintah
 
@@ -42,6 +52,7 @@ Bot admin-terkelola untuk mencari Kamus Aktivitas Disbudpar, menghitung WPT, mem
 - `/tambah` — menambahkan aktivitas.
 - `/dashboard` atau `/progres` — melihat WPT terbaru.
 - `/riwayat` — melihat aktivitas terbaru di e‑Master, lalu Edit, Salin, atau Hapus.
+- `/laporan` — membuat Laporan WFH pada hari Jumat sampai pukul 23.59 WIB.
 - `/batal` — menghentikan proses pengisian.
 - `/tambahpegawai` — admin mendaftarkan pegawai.
 - `/aktifkan` — pegawai melengkapi password setelah diundang admin.
@@ -50,10 +61,12 @@ Bot admin-terkelola untuk mencari Kamus Aktivitas Disbudpar, menghitung WPT, mem
 
 1. Pegawai membuka bot dan menjalankan `/start` untuk melihat Telegram ID.
 2. Admin memilih **Kelola Pegawai → Tambah Pegawai** atau menjalankan `/tambahpegawai`.
-3. Admin memasukkan Telegram ID, NIP, dan nama pegawai.
-4. Pegawai menjalankan `/aktifkan`, lalu mengirim password e‑Master sendiri.
-5. Pesan password otomatis dihapus dan disimpan menggunakan enkripsi Fernet.
-6. Pegawai menjalankan `/login` dan memasukkan OTP Google Authenticator miliknya.
+3. Admin memilih jenis pegawai ASN atau Non-ASN.
+4. Admin memasukkan Telegram ID, NIP/ID Pegawai, dan nama pegawai.
+5. ASN menjalankan `/aktifkan`, lalu mengirim password e‑Master sendiri.
+6. Pesan password ASN otomatis dihapus dan disimpan menggunakan enkripsi Fernet.
+7. ASN menjalankan `/login` dan memasukkan OTP Google Authenticator miliknya.
+8. Non-ASN langsung aktif dan cukup menjalankan `/start`; aktivitasnya tidak pernah dikirim ke e-Master.
 
 Jangan membagikan akun Telegram. Admin tidak dapat melihat password asli pegawai melalui menu bot.
 
@@ -126,6 +139,75 @@ e‑Master kedaluwarsa, bot akan membersihkan cookie lama secara otomatis saat
 6. Buka Telegram: `/start`, kemudian `/login`.
 7. Saat diminta, kirim OTP 6 digit. Pesan OTP akan berusaha dihapus segera setelah diproses.
 8. Jalankan `/tambah` untuk uji satu aktivitas.
+
+## Menyiapkan Google Drive
+
+Folder yang diberikan berada di Google Drive pengguna. Untuk folder biasa di **My Drive**, gunakan OAuth pengguna agar file dimiliki akun Google tersebut. Service Account tidak mempunyai kuota kepemilikan file dan hanya dipakai jika folder root benar-benar berada di **Shared Drive**.
+
+### Opsi A — OAuth pengguna untuk My Drive (direkomendasikan)
+
+1. Aktifkan Google Drive API pada proyek Google Cloud.
+2. Buat OAuth Client bertipe **Desktop app**, lalu unduh file JSON ke komputer admin.
+3. Di komputer admin, instal dependensi dan jalankan:
+
+```bash
+python tools/generate_drive_refresh_token.py /path/client_secret.json
+```
+
+4. Browser akan meminta izin Google Drive. Setelah disetujui, Terminal menampilkan `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, dan `GOOGLE_OAUTH_REFRESH_TOKEN`.
+5. Simpan ketiga nilai tersebut langsung sebagai Railway Variables. Jangan masukkan nilainya ke ZIP, repository, Telegram, atau chat.
+6. Isi `DRIVE_ROOT_FOLDER_ID=1WBCjukQS3lMJFfsfjGb3_mGhSFZJpsXd`.
+
+### Opsi B — Service Account untuk Shared Drive
+
+1. Buat Service Account dan aktifkan Google Drive API.
+2. Tambahkan email Service Account sebagai anggota Shared Drive dengan izin mengelola konten.
+3. Ubah JSON kunci menjadi Base64, lalu simpan sebagai Railway Variable `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64`.
+4. Pastikan `DRIVE_ROOT_FOLDER_ID` menunjuk folder yang berada di Shared Drive, bukan My Drive.
+
+Setelah deploy, admin dapat menekan **Kelola Pegawai → Selesaikan Maintenance** untuk menjalankan pemeriksaan database, hak menambah file, jenis folder, dan koneksi Drive.
+
+Struktur dibuat otomatis tanpa ditampilkan pada dashboard pengguna:
+
+```text
+Nama Pegawai/
+├── Agustus/
+│   ├── 14/                  # foto aktivitas tanggal 14
+│   └── Laporan WFH/         # file Word laporan
+```
+
+Untuk membuat Base64 pada macOS/Linux:
+
+```bash
+base64 < service-account.json | tr -d '\n'
+```
+
+Untuk Windows PowerShell:
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("service-account.json"))
+```
+
+Jangan mengirim token bot, password, OTP, `ENCRYPTION_KEY`, atau JSON Service Account melalui Telegram maupun chat.
+
+## Aturan Laporan WFH
+
+- Tombol generate hanya aktif pada hari Jumat berdasarkan zona `Asia/Jakarta`.
+- Batas waktu adalah Jumat pukul 23.59.59 WIB; mulai Sabtu pukul 00.00 laporan baru ditolak.
+- Hanya aktivitas bertanggal Jumat dan dikirim pada Jumat yang sama yang masuk laporan.
+- Generate ulang sebelum batas waktu memperbarui file Drive yang sama.
+- Laporan lama tetap dapat dibuka setelah periode generate ditutup.
+- Foto ditampilkan dengan rasio asli dan tidak dipotong. Teks `Lihat File` mengarah ke file bukti terkait.
+
+## Prosedur Maintenance dan Deploy
+
+1. Sebelum mengubah kode, buka **Kelola Pegawai → Mulai Maintenance**.
+2. Pastikan notifikasi maintenance sudah terkirim, kemudian lakukan deploy Railway.
+3. Saat versi baru aktif, bot memeriksa database dan Google Drive.
+4. Jika `AUTO_END_MAINTENANCE_ON_START=true`, bot otomatis menutup maintenance dan mengirim notifikasi selesai setelah pemeriksaan berhasil.
+5. Jika pemeriksaan belum berhasil, maintenance tetap aktif. Admin dapat memperbaiki konfigurasi lalu menekan **Selesaikan Maintenance**.
+
+Pada deploy pertama versi 22, fitur notifikasi belum tersedia pada kode lama. Aktifkan dan uji Mode Maintenance setelah versi 22 berhasil berjalan untuk digunakan pada deploy berikutnya.
 
 ## Memperbarui dari versi sebelumnya
 

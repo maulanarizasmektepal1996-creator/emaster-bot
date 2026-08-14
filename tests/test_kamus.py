@@ -155,7 +155,7 @@ class ActivityDeletionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             client = EMasterClient("199001010000000001", "password",
                                    Fernet.generate_key().decode(), str(Path(tmp) / "session.bin"))
-            page = Mock(ok=True, text=f"""
+            page = Mock(ok=True, text="""
               <form method='post' enctype='multipart/form-data'
                 action='/modul_essmankin/mod_aktifitas_bulan/aksi_aktifitas_bulan.php?module=aktifitas_bulan&amp;act=update'>
                 <input name='id_realisasi' value='5863986'>

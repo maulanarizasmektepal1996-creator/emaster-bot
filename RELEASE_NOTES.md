@@ -1,3 +1,25 @@
+# Versi 22.0.1 - Koreksi Jadwal Laporan WFH
+
+- Mengubah jadwal generate Laporan WFH dari Rabu menjadi **Jumat pukul 00.00–23.59.59 WIB**.
+- Laporan hanya memuat aktivitas bertanggal Jumat yang benar-benar dikirim pada Jumat yang sama.
+
+# Versi 22.0.0 - Aktivitas Harian, Drive, Laporan WFH, dan Maintenance
+
+- Menambahkan jenis pegawai **ASN** dan **Non-ASN** pada Kelola Pegawai.
+- ASN tetap memakai login OTP, kamus, tugas jabatan, WPT, dan pengiriman resmi ke e-Master.
+- Non-ASN dapat langsung mengisi aktivitas tanpa akun, password, atau OTP e-Master.
+- Form aktivitas menerima teks atau sampai lima foto dengan caption; caption dirapikan dasar tanpa AI dan selalu dikonfirmasi.
+- Foto bukti diunggah otomatis ke struktur Google Drive `Nama Pegawai / Bulan / Tanggal` tanpa menampilkan tujuan penyimpanan pada dashboard.
+- Mendukung OAuth pengguna untuk folder My Drive dan Service Account khusus folder Shared Drive, sesuai aturan kepemilikan Google Drive.
+- Menambahkan jurnal harian lokal, Aktivitas Hari Ini, Riwayat Harian, daftar Bukti Dukung, retry unggahan, dan perlindungan duplikat berdasarkan pesan Telegram.
+- Menambahkan generator Word Laporan WFH dengan tabel Arial 12, tanggal rata kiri, aktivitas rata kiri-kanan, foto tidak terpotong, dan hyperlink **Lihat File**.
+- Laporan hanya memuat aktivitas pada hari laporan yang benar-benar dikirim pada tanggal yang sama.
+- Generate Laporan WFH dibatasi sesuai hari laporan yang dikonfigurasi.
+- File laporan diunggah ke `Nama Pegawai / Bulan / Laporan WFH`, diperbarui tanpa duplikasi, dan file sementara Railway langsung dihapus.
+- Menambahkan Mode Maintenance, notifikasi sebelum deploy, pemeriksaan sistem, dan notifikasi selesai setelah server kembali sehat.
+- Mengubah polling agar pesan selama restart singkat tidak dibuang.
+- Migrasi database berlangsung otomatis dan mempertahankan akun, aktivitas, favorit, draf, audit, serta sesi versi sebelumnya.
+
 # Versi 21.3.0 - Direktori Jabatan Lokal
 
 - Menggunakan **DATA PEGAWAI BID PEMASARAN(1).xlsx** tab `update` sebagai satu-satunya sumber nama dan jabatan profil.

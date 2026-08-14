@@ -5,10 +5,12 @@ import json
 import logging
 import os
 import sqlite3
+import tempfile
 import unicodedata
 from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
@@ -18,8 +20,12 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
 
 from emaster import (AuthenticationRequired, EMasterActivity, EMasterClient,
                      EMasterError, KamusItem, WorkTarget)
+from drive_storage import DriveStorageError, GoogleDriveStorage
 from staff_directory import LocalStaffDirectory, StaffDirectoryError
 from storage import Storage
+from wfh_report import (EvidenceFile, ReportActivity, build_wfh_report,
+                        format_indonesian_date, now_jakarta, report_file_name,
+                        report_window_open, tidy_sentence)
 
 load_dotenv()
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
@@ -34,7 +40,11 @@ storage.claim_legacy_activities(OWNER)
 storage.claim_legacy_favorites(OWNER)
 staff_directory = LocalStaffDirectory()
 clients: dict[int, EMasterClient] = {}
+report_locks: dict[int, asyncio.Lock] = {}
 session_dir = Path(os.getenv("SESSION_PATH", "/data/emaster_session.bin")).parent / "sessions"
+drive_storage = GoogleDriveStorage()
+REPORT_TEMPLATE = Path(__file__).with_name("templates") / "Laporan_WFH_template.docx"
+JAKARTA = ZoneInfo("Asia/Jakarta")
 
 
 def clear_cached_user(telegram_id: int) -> None:
@@ -65,8 +75,17 @@ def get_client(telegram_id: int) -> EMasterClient:
 DATE, TARGET, SEARCH, PICK, VOLUME, OBJECT, CONFIRM, OTP, ADMIN_TGID, ADMIN_NIP, ADMIN_NAME, ACTIVATE_PASSWORD = range(12)
 EDIT_ACTIVITY, EDIT_PICK, EDIT_DATE, EDIT_VOLUME, EDIT_OBJECT, EDIT_CONFIRM = range(12, 18)
 COPY_DATE, COPY_TARGET, COPY_VOLUME, COPY_OBJECT = range(18, 22)
+ADMIN_TYPE, DAILY_ACTIVITY, DAILY_CONFIRM, ADDITIONAL_PHOTO = range(22, 26)
 KAMUS_PAGE_SIZE = 8
 HISTORY_PAGE_SIZE = 5
+
+
+def employee_type(user) -> str:
+    return user[8] if user and len(user) > 8 and user[8] in {"asn", "non_asn"} else "asn"
+
+
+def employee_unit(user) -> str:
+    return user[9] if user and len(user) > 9 and user[9] else "Pemasaran"
 
 
 def normalize_text(value: str) -> str:
@@ -92,9 +111,13 @@ def parse_activity_date(value: str) -> datetime:
     return date
 
 
+def activity_date_iso(value: str) -> str:
+    return datetime.strptime(value.strip().replace("/", "-"), "%d-%m-%Y").date().isoformat()
+
+
 def persist_draft(telegram_id: int, context: ContextTypes.DEFAULT_TYPE, stage: str) -> None:
     payload = {"stage": stage}
-    for key in ("date", "volume", "object"):
+    for key in ("date", "volume", "object", "source_chat_id", "source_message_id", "photos"):
         if key in context.user_data:
             payload[key] = context.user_data[key]
     if isinstance(context.user_data.get("target"), WorkTarget):
@@ -113,7 +136,7 @@ def restore_draft(telegram_id: int, context: ContextTypes.DEFAULT_TYPE) -> dict 
         if not isinstance(payload, dict):
             raise ValueError
         context.user_data.clear()
-        for key in ("date", "volume", "object"):
+        for key in ("date", "volume", "object", "source_chat_id", "source_message_id", "photos"):
             if key in payload:
                 context.user_data[key] = payload[key]
         if isinstance(payload.get("target"), dict):
@@ -148,6 +171,15 @@ def private(fn):
             if update.effective_message:
                 await update.effective_message.reply_text("⛔ Akun belum aktif. Minta admin mendaftarkan Telegram ID Anda, lalu gunakan /aktifkan.")
             return ConversationHandler.END
+        if storage.maintenance_active() and not user[5]:
+            if update.callback_query:
+                await update.callback_query.answer("Bot sedang dalam perbaikan.", show_alert=True)
+            if update.effective_message:
+                await update.effective_message.reply_text(
+                    "🔧 BOT SEDANG DALAM PERBAIKAN\n\n"
+                    "E-Master Jatim sedang menjalani pembaruan sistem. "
+                    "Silakan gunakan kembali setelah notifikasi selesai perbaikan dikirim.")
+            return ConversationHandler.END
         return await fn(update, context)
     return wrapped
 
@@ -160,32 +192,53 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Anda sudah didaftarkan admin. Jalankan /aktifkan untuk membuat akses pribadi.")
     elif user[4] == "disabled":
         await update.message.reply_text("⛔ Akun dinonaktifkan oleh admin.")
+    elif storage.maintenance_active() and not user[5]:
+        await update.message.reply_text(
+            "🔧 BOT SEDANG DALAM PERBAIKAN\n\n"
+            "E-Master Jatim sedang menjalani pembaruan sistem. "
+            "Mohon menunggu sampai perbaikan selesai.")
     else:
         user = await sync_employee_profile(update.effective_user.id)
         await show_menu(update.effective_message, user)
 
 
 def menu_content(user, reveal_nip: bool = False):
+    kind = employee_type(user)
     rows = [
         [InlineKeyboardButton("➕ Tambah Aktivitas", callback_data="menu:add")],
-        [InlineKeyboardButton("📊 Dashboard WPT", callback_data="menu:progress"),
-         InlineKeyboardButton("🕘 Riwayat", callback_data="menu:history")],
-        [InlineKeyboardButton("⭐ Favorit Saya", callback_data="menu:favorites"),
-         InlineKeyboardButton("🔐 Login OTP", callback_data="menu:login")],
-        [InlineKeyboardButton("🔄 Perbarui Profil", callback_data="menu:profile")],
+        [InlineKeyboardButton("📋 Aktivitas Hari Ini", callback_data="daily:today"),
+         InlineKeyboardButton("🗓 Riwayat Harian", callback_data="daily:history")],
+        [InlineKeyboardButton("📄 Laporan WFH", callback_data="report:generate"),
+         InlineKeyboardButton("☁️ Bukti Dukung", callback_data="daily:evidence")],
     ]
-    if storage.get_draft(user[0]):
+    if kind == "asn":
+        rows.extend([
+            [InlineKeyboardButton("📊 Dashboard WPT", callback_data="menu:progress"),
+             InlineKeyboardButton("🕘 Riwayat E-Master", callback_data="menu:history")],
+            [InlineKeyboardButton("⭐ Favorit Saya", callback_data="menu:favorites"),
+             InlineKeyboardButton("🔐 Login OTP", callback_data="menu:login")],
+        ])
+    rows.append([InlineKeyboardButton("👤 Profil", callback_data="menu:profileview"),
+                 InlineKeyboardButton("❓ Bantuan", callback_data="menu:help")])
+    if kind == "asn":
+        rows.append([InlineKeyboardButton("🔄 Perbarui Profil", callback_data="menu:profile")])
+    if kind == "asn" and storage.get_draft(user[0]):
         rows.append([InlineKeyboardButton("📝 Lanjutkan Draft", callback_data="menu:resume")])
     if user[5]:
         rows.append([InlineKeyboardButton("👥 Kelola Pegawai", callback_data="menu:users")])
     name = user[3] or "Pegawai"
     nip = user[1]
     shown_nip = nip if reveal_nip else (("•" * max(0, len(nip) - 4)) + nip[-4:])
-    position = user[6] or "Belum terdaftar pada data pegawai — tekan Perbarui Profil"
-    text = ("✨ AKTIVITAS HARIAN E‑MASTER\n"
+    position = user[6] or ("Pegawai Non-ASN" if kind == "non_asn" else
+                           "Belum terdaftar pada data pegawai — tekan Perbarui Profil")
+    identifier_label = "NIP" if kind == "asn" else "ID Pegawai"
+    type_label = "ASN" if kind == "asn" else "Non-ASN"
+    login_note = "🔐 OTP diperlukan pada setiap login baru.\n" if kind == "asn" else ""
+    text = ("🌿 E-MASTER JATIM\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            f"👤 Nama: {name}\n🪪 NIP: {shown_nip}\n💼 Jabatan: {position}\n"
-            "🔐 OTP diperlukan pada setiap login baru.\n\n"
+            f"👤 Nama: {name}\n🪪 {identifier_label}: {shown_nip}\n"
+            f"🏷 Jenis: {type_label}\n💼 Jabatan: {position}\n"
+            f"{login_note}\n"
             "Pilih menu:")
     return text, InlineKeyboardMarkup(rows)
 
@@ -205,6 +258,8 @@ async def show_menu(message, user, edit=False):
 async def sync_employee_profile(telegram_id: int, *, strict: bool = False):
     try:
         user = storage.get_user(telegram_id)
+        if employee_type(user) == "non_asn":
+            return user
         profile = await asyncio.to_thread(staff_directory.find_by_nip, user[1])
         if not profile:
             storage.clear_profile_position(telegram_id)
@@ -228,6 +283,13 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     if update.callback_query:
         await update.callback_query.answer()
+    user = storage.get_user(update.effective_user.id)
+    if employee_type(user) == "non_asn":
+        await message.reply_text(
+            "ℹ️ Pegawai Non-ASN tidak memerlukan login atau OTP E-Master.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                "🏠 Menu Utama", callback_data="menu:home")]]))
+        return ConversationHandler.END
     status = await message.reply_text("⏳ Membuat sesi login e‑Master baru…")
     try:
         client = get_client(update.effective_user.id)
@@ -269,6 +331,19 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     if update.callback_query:
         await update.callback_query.answer()
+    user = storage.get_user(update.effective_user.id)
+    if employee_type(user) == "non_asn":
+        context.user_data.clear()
+        await message.reply_text(
+            "📝 TAMBAH AKTIVITAS HARIAN\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"📅 Tanggal: {format_indonesian_date(now_jakarta().date())}\n\n"
+            "Kirim salah satu:\n"
+            "• Uraian aktivitas dalam bentuk pesan teks; atau\n"
+            "• Satu foto dengan uraian aktivitas pada caption. Foto tambahan dapat dipilih saat konfirmasi.\n\n"
+            "Tuliskan siapa yang terlibat, kegiatan yang dilakukan, serta hasil atau dampaknya.\n"
+            "Gunakan /batal untuk membatalkan.")
+        return DAILY_ACTIVITY
     forced_new = bool(update.callback_query and update.callback_query.data == "menu:newadd")
     if storage.get_draft(update.effective_user.id) and not forced_new:
         await message.reply_text(
@@ -594,7 +669,12 @@ async def volume(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @private
 async def object_work(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
+    text = (update.message.caption if update.message.photo else update.message.text) or ""
+    text = tidy_sentence(text)
+    if update.message.photo and not text:
+        await update.message.reply_text(
+            "⚠️ Foto harus disertai caption berisi uraian aktivitas.")
+        return OBJECT
     if len(text) < 5:
         await update.message.reply_text("Objek kerja terlalu pendek.")
         return OBJECT
@@ -602,6 +682,16 @@ async def object_work(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Objek kerja terlalu panjang. Maksimal 1.000 karakter.")
         return OBJECT
     context.user_data["object"] = text
+    context.user_data["source_chat_id"] = update.effective_chat.id
+    context.user_data["source_message_id"] = update.message.message_id
+    if update.message.photo:
+        photo = update.message.photo[-1]
+        context.user_data["photos"] = [{
+            "file_id": photo.file_id,
+            "unique_id": photo.file_unique_id,
+            "mime_type": "image/jpeg",
+            "extension": ".jpg",
+        }]
     persist_draft(update.effective_user.id, context, "CONFIRM")
     return await prepare_add_confirmation(update.effective_message, context, update.effective_user.id)
 
@@ -641,17 +731,217 @@ async def prepare_add_confirmation(message, context: ContextTypes.DEFAULT_TYPE, 
                f"📦 Satuan: {item.unit}\n⏱ WPT aktivitas: {item.wpt} × {vol} = {new_minutes} menit\n"
                f"📊 WPT hari ini: {existing_minutes} → {existing_minutes + new_minutes}/660 menit\n\n"
                f"📝 Objek Kerja:\n{text}")
+    photos = context.user_data.get("photos") or []
+    if photos:
+        summary += f"\n\n📷 Foto: {len(photos)} bukti dukung"
     if duplicates:
         summary = ("⚠️ AKTIVITAS MIRIP SUDAH ADA\n"
                    "Tanggal, aktivitas, dan objek kerja sama dengan data e‑Master.\n\n" + summary)
     send_callback = "send_duplicate" if duplicates else "send"
     send_label = "⚠️ Tetap Kirim" if duplicates else "✅ Kirim ke e‑Master"
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(send_label, callback_data=send_callback),
-                                InlineKeyboardButton("❌ Batal", callback_data="cancel")]])
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(send_label, callback_data=send_callback),
+         InlineKeyboardButton("❌ Batal", callback_data="cancel")],
+        [InlineKeyboardButton("📷 Tambah Foto", callback_data="add_photo")],
+    ])
     # Teks dari e-Master dapat berisi underscore seperti eastjavatrip_id.
     # Jangan gunakan Markdown agar seluruh karakter selalu aman ditampilkan.
     await message.reply_text(summary, reply_markup=kb)
     return CONFIRM
+
+
+async def upload_activity_photos(context: ContextTypes.DEFAULT_TYPE, user, activity_id: int,
+                                 activity_date: str, activity_time: str):
+    photos = context.user_data.get("photos") or []
+    if not isinstance(photos, list) or not photos:
+        return True, [], []
+    created_at = now_jakarta().isoformat(timespec="seconds")
+    employee_folder_id = None
+    day_folder_id = None
+    failed_ids = []
+    errors = []
+    evidence_ids = []
+    parsed_date = datetime.strptime(activity_date, "%Y-%m-%d")
+    for index, photo in enumerate(photos, start=1):
+        file_name = photo.get("file_name") or (
+            f"{activity_date}_{activity_time.replace(':', '.')}_"
+            f"{activity_id:06d}_{index:02d}{photo.get('extension', '.jpg')}")
+        evidence_id = storage.add_evidence(
+            daily_activity_id=activity_id,
+            telegram_file_id=photo["file_id"],
+            telegram_unique_id=photo["unique_id"],
+            mime_type=photo.get("mime_type", "image/jpeg"),
+            file_name=file_name,
+            created_at_local=created_at,
+        )
+        evidence_ids.append(evidence_id)
+        existing = storage.get_evidence(evidence_id)
+        if existing and existing[8] == "uploaded":
+            continue
+        try:
+            telegram_file = await context.bot.get_file(photo["file_id"])
+            content = bytes(await telegram_file.download_as_bytearray())
+            if not employee_folder_id:
+                employee_folder_id = await asyncio.to_thread(
+                    drive_storage.employee_folder, user[3] or str(user[0]), user[10])
+                if not user[10]:
+                    storage.set_drive_folder_id(user[0], employee_folder_id)
+            if not day_folder_id:
+                day_folder_id = await asyncio.to_thread(
+                    drive_storage.day_folder, employee_folder_id,
+                    parsed_date.year, parsed_date.month, parsed_date.day)
+            file_id, file_url = await asyncio.to_thread(
+                drive_storage.upload_bytes,
+                content=content, file_name=file_name,
+                mime_type=photo.get("mime_type", "image/jpeg"), parent_id=day_folder_id)
+            storage.mark_evidence_uploaded(evidence_id, file_id, file_url, file_name)
+        except Exception as exc:
+            message = str(exc) if isinstance(exc, DriveStorageError) else "Bukti foto belum dapat diunggah."
+            storage.mark_evidence_failed(evidence_id, message)
+            failed_ids.append(evidence_id)
+            errors.append(message)
+            logging.warning("Upload bukti gagal untuk activity_id=%s: %s",
+                            activity_id, type(exc).__name__)
+    return not failed_ids, failed_ids, errors
+
+
+async def show_daily_confirmation(message, context: ContextTypes.DEFAULT_TYPE, *, edit=False):
+    payload = context.user_data["daily_entry"]
+    parsed_date = datetime.strptime(payload["activity_date"], "%Y-%m-%d").date()
+    photos = context.user_data.get("photos") or []
+    photo_note = f"{len(photos)} foto" if photos else "Tanpa foto"
+    text = (
+        "📋 KONFIRMASI AKTIVITAS\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📅 Tanggal: {format_indonesian_date(parsed_date)}\n"
+        f"🕘 Waktu: {payload['activity_time']} WIB\n"
+        f"📷 Bukti: {photo_note}\n\n"
+        f"📝 Aktivitas:\n{payload['text']}")
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Simpan", callback_data="daily:save"),
+         InlineKeyboardButton("✏️ Ubah", callback_data="daily:edit")],
+        [InlineKeyboardButton("📷 Tambah Foto", callback_data="daily:addphoto")],
+        [InlineKeyboardButton("❌ Batalkan", callback_data="daily:cancel")],
+    ])
+    if edit:
+        await message.edit_text(text, reply_markup=markup)
+    else:
+        await message.reply_text(text, reply_markup=markup)
+
+
+@private
+async def daily_activity_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    text = (message.caption if message.photo else message.text) or ""
+    text = tidy_sentence(text)
+    if message.photo and not text:
+        await message.reply_text("⚠️ Foto harus disertai caption berisi uraian aktivitas.")
+        return DAILY_ACTIVITY
+    if len(text) < 10:
+        await message.reply_text(
+            "⚠️ Uraian terlalu pendek. Tuliskan kegiatan dan hasilnya minimal 10 karakter.")
+        return DAILY_ACTIVITY
+    if len(text) > 2000:
+        await message.reply_text("⚠️ Uraian maksimal 2.000 karakter.")
+        return DAILY_ACTIVITY
+    moment = now_jakarta()
+    context.user_data["daily_entry"] = {
+        "activity_date": moment.date().isoformat(),
+        "activity_time": moment.strftime("%H:%M:%S"),
+        "created_at_local": moment.isoformat(timespec="seconds"),
+        "text": text,
+        "source_chat_id": update.effective_chat.id,
+        "source_message_id": message.message_id,
+    }
+    if message.photo:
+        photo = message.photo[-1]
+        context.user_data["photos"] = [{
+            "file_id": photo.file_id,
+            "unique_id": photo.file_unique_id,
+            "mime_type": "image/jpeg",
+            "extension": ".jpg",
+        }]
+    await show_daily_confirmation(message, context)
+    return DAILY_CONFIRM
+
+
+@private
+async def daily_activity_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    action = query.data.rsplit(":", 1)[1]
+    if action == "cancel":
+        context.user_data.clear()
+        await query.edit_message_text("❌ Aktivitas dibatalkan dan tidak disimpan.")
+        return ConversationHandler.END
+    if action == "edit":
+        await query.edit_message_text(
+            "✏️ Kirim ulang uraian aktivitas, atau kirim ulang foto beserta caption yang benar.")
+        return DAILY_ACTIVITY
+    if action == "addphoto":
+        context.user_data["photo_return"] = "daily"
+        await query.edit_message_text(
+            "📷 Kirim foto tambahan. Caption tidak wajib karena uraian aktivitas sudah tersimpan.\n\n"
+            "Anda dapat mengulangi tombol Tambah Foto untuk menambahkan beberapa bukti.")
+        return ADDITIONAL_PHOTO
+    payload = context.user_data.get("daily_entry")
+    user = storage.get_user(update.effective_user.id)
+    if not isinstance(payload, dict):
+        await query.edit_message_text("⚠️ Data konfirmasi sudah kedaluwarsa. Mulai ulang dari menu.")
+        return ConversationHandler.END
+    await query.edit_message_text("⏳ Menyimpan aktivitas…")
+    activity_id, created = storage.add_daily_activity(
+        telegram_id=user[0], employee_type="non_asn",
+        activity_date=payload["activity_date"], activity_time=payload["activity_time"],
+        activity_text=payload["text"], created_at_local=payload["created_at_local"],
+        emaster_status="not_required", source_chat_id=payload["source_chat_id"],
+        source_message_id=payload["source_message_id"],
+    )
+    uploaded, failed_ids, _ = await upload_activity_photos(
+        context, user, activity_id, payload["activity_date"], payload["activity_time"])
+    buttons = [[InlineKeyboardButton("➕ Tambah Lagi", callback_data="menu:add"),
+                InlineKeyboardButton("📋 Hari Ini", callback_data="daily:today")],
+               [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu:home")]]
+    note = ""
+    if context.user_data.get("photos") and not uploaded:
+        note = "\n\n⚠️ Aktivitas tersimpan, tetapi ada foto yang belum berhasil diproses."
+        for evidence_id in reversed(failed_ids):
+            buttons.insert(0, [InlineKeyboardButton(
+                "🔄 Coba Lagi Foto", callback_data=f"evidence:retry:{evidence_id}")])
+    duplicate_note = "\nℹ️ Pesan ini sebelumnya sudah disimpan." if not created else ""
+    await query.edit_message_text(
+        f"✅ AKTIVITAS BERHASIL DISIMPAN\n\n{payload['text']}{note}{duplicate_note}",
+        reply_markup=InlineKeyboardMarkup(buttons))
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+@private
+async def additional_photo_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.photo:
+        await update.message.reply_text("⚠️ Kirim file sebagai foto, bukan pesan teks atau dokumen.")
+        return ADDITIONAL_PHOTO
+    photos = context.user_data.setdefault("photos", [])
+    photo = update.message.photo[-1]
+    if any(item.get("unique_id") == photo.file_unique_id for item in photos):
+        await update.message.reply_text("ℹ️ Foto tersebut sudah ditambahkan.")
+    elif len(photos) >= 5:
+        await update.message.reply_text("⚠️ Maksimal 5 foto untuk satu aktivitas.")
+    else:
+        photos.append({
+            "file_id": photo.file_id,
+            "unique_id": photo.file_unique_id,
+            "mime_type": "image/jpeg",
+            "extension": ".jpg",
+        })
+    return_to = context.user_data.pop("photo_return", "daily")
+    if return_to in {"asn", "copy"}:
+        persist_draft(update.effective_user.id, context, "CONFIRM")
+        return await prepare_add_confirmation(
+            update.effective_message, context, update.effective_user.id,
+            volume_state=COPY_VOLUME if return_to == "copy" else VOLUME)
+    await show_daily_confirmation(update.effective_message, context)
+    return DAILY_CONFIRM
 
 
 @private
@@ -662,6 +952,14 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         storage.delete_draft(update.effective_user.id)
         await query.edit_message_text("Pengisian dibatalkan.")
         return ConversationHandler.END
+    if query.data == "add_photo":
+        context.user_data["photo_return"] = (
+            "copy" if isinstance(context.user_data.get("copy_source"), EMasterActivity)
+            else "asn")
+        await query.edit_message_text(
+            "📷 Kirim foto tambahan. Caption tidak wajib karena uraian aktivitas sudah tersimpan.\n\n"
+            "Maksimal 5 foto untuk satu aktivitas.")
+        return ADDITIONAL_PHOTO
     item = context.user_data["item"]
     date = context.user_data["date"]
     allow_duplicate = query.data == "send_duplicate"
@@ -687,13 +985,38 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             month=date[3:5], target=context.user_data["target"], date=date, item=item,
             volume=context.user_data["volume"], object_work=context.user_data["object"])
         storage.add_sent(update.effective_user.id, date, item, context.user_data["volume"], context.user_data["object"])
+        moment = now_jakarta()
+        activity_date_iso_value = activity_date_iso(date)
+        activity_time = moment.strftime("%H:%M:%S")
+        user = storage.get_user(update.effective_user.id)
+        activity_id, _ = storage.add_daily_activity(
+            telegram_id=update.effective_user.id, employee_type="asn",
+            activity_date=activity_date_iso_value, activity_time=activity_time,
+            activity_text=context.user_data["object"],
+            created_at_local=moment.isoformat(timespec="seconds"),
+            emaster_status="sent", emaster_code=item.code,
+            emaster_activity=item.activity,
+            emaster_target=context.user_data["target"].name,
+            wpt_minutes=item.wpt * context.user_data["volume"],
+            source_chat_id=context.user_data.get("source_chat_id"),
+            source_message_id=context.user_data.get("source_message_id"),
+        )
+        uploaded, failed_ids, _ = await upload_activity_photos(
+            context, user, activity_id, activity_date_iso_value, activity_time)
         storage.delete_draft(update.effective_user.id)
         context.user_data["last_sent"] = item
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⭐ Simpan Favorit", callback_data=f"favorite:add:{item.code}")],
-                                   [InlineKeyboardButton("➕ Tambah Lagi", callback_data="menu:add"),
-                                    InlineKeyboardButton("📊 Dashboard", callback_data="menu:progress")],
-                                   [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu:home")]])
-        await query.edit_message_text(f"✅ BERHASIL TERSIMPAN\n\n{item.activity}\n⏱ {item.wpt * context.user_data['volume']} menit\n📅 {date}",
+        buttons = [[InlineKeyboardButton("⭐ Simpan Favorit", callback_data=f"favorite:add:{item.code}")],
+                   [InlineKeyboardButton("➕ Tambah Lagi", callback_data="menu:add"),
+                    InlineKeyboardButton("📊 Dashboard", callback_data="menu:progress")],
+                   [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu:home")]]
+        photo_note = ""
+        if context.user_data.get("photos") and not uploaded:
+            photo_note = "\n\n⚠️ Aktivitas sudah masuk E-Master, tetapi ada foto yang belum berhasil diproses."
+            for evidence_id in reversed(failed_ids):
+                buttons.insert(0, [InlineKeyboardButton(
+                    "🔄 Coba Lagi Foto", callback_data=f"evidence:retry:{evidence_id}")])
+        kb = InlineKeyboardMarkup(buttons)
+        await query.edit_message_text(f"✅ BERHASIL TERSIMPAN\n\n{item.activity}\n⏱ {item.wpt * context.user_data['volume']} menit\n📅 {date}{photo_note}",
                                       reply_markup=kb)
     except AuthenticationRequired:
         await query.edit_message_text("🔐 Sesi habis. Jalankan /login, lalu ulangi pengiriman.")
@@ -765,6 +1088,20 @@ async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.answer()
     message = update.effective_message
     now = datetime.now()
+    user = storage.get_user(update.effective_user.id)
+    if employee_type(user) == "non_asn":
+        month_prefix = now_jakarta().strftime("%Y-%m")
+        rows = storage.db.execute("""SELECT COUNT(*),COUNT(DISTINCT activity_date)
+          FROM daily_activities WHERE telegram_id=? AND status='active'
+          AND substr(activity_date,1,7)=?""", (user[0], month_prefix)).fetchone()
+        await message.reply_text(
+            "📊 RINGKASAN AKTIVITAS\n━━━━━━━━━━━━━━━━━━━━\n"
+            f"📝 Aktivitas bulan ini: {rows[0]}\n"
+            f"📅 Hari aktif: {rows[1]}\n\n"
+            "Pegawai Non-ASN tidak memiliki perhitungan WPT E-Master.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                "🏠 Menu Utama", callback_data="menu:home")]]))
+        return
     try:
         client = get_client(update.effective_user.id)
         current = await asyncio.to_thread(client.get_month_progress, now.strftime("%m"))
@@ -796,6 +1133,9 @@ async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @private
 async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = storage.get_user(update.effective_user.id)
+    if employee_type(user) == "non_asn":
+        return await daily_history(update, context)
     if update.callback_query:
         await update.callback_query.answer()
     message = update.effective_message
@@ -1127,6 +1467,13 @@ async def edit_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             client.update_activity, original, date=date, volume=volume_value,
             object_work=object_work, item=item if isinstance(item, KamusItem) else None)
         storage.add_edited(update.effective_user.id, original, updated)
+        storage.sync_daily_edit(
+            update.effective_user.id,
+            before_date=activity_date_iso(original.date),
+            before_activity=original.detail, before_text=original.object_work,
+            after_date=activity_date_iso(updated.date),
+            after_activity=updated.detail, after_text=updated.object_work,
+            after_wpt_minutes=updated.total_minutes)
     except AuthenticationRequired:
         await query.edit_message_text("🔐 Sesi habis. Login OTP lalu buka Riwayat kembali.")
         return ConversationHandler.END
@@ -1322,6 +1669,9 @@ async def delete_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         client = get_client(update.effective_user.id)
         await asyncio.to_thread(client.delete_activity, item)
         storage.add_deleted(update.effective_user.id, item)
+        storage.mark_daily_deleted(
+            update.effective_user.id, activity_date_iso(item.date),
+            item.detail, item.object_work)
     except AuthenticationRequired:
         context.user_data.pop("pending_delete", None)
         await query.edit_message_text("🔐 Sesi e‑Master habis. Jalankan /login, lalu ulangi dari /riwayat.")
@@ -1359,6 +1709,254 @@ async def menu_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_menu(update.callback_query.message, user, edit=True)
 
 
+def _daily_history_text(rows, title: str) -> str:
+    lines = [title, "━━━━━━━━━━━━━━━━━━━━"]
+    if not rows:
+        return "\n".join(lines + ["Belum ada aktivitas."])
+    for index, row in enumerate(rows, start=1):
+        photo = f"📷 {row[8]}/{row[7]} foto" if row[7] else "Tanpa foto"
+        emaster = " · E-Master ✅" if row[5] == "sent" else ""
+        lines.append(
+            f"\n{index}. 📅 {row[1]} · {row[2]} WIB\n{row[3]}\n{photo}{emaster}")
+    return "\n".join(lines)
+
+
+@private
+async def daily_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        await update.callback_query.answer()
+    today = now_jakarta().date().isoformat()
+    rows = storage.list_daily_activities(update.effective_user.id, limit=30,
+                                         activity_date=today)
+    await update.effective_message.reply_text(
+        _daily_history_text(rows, "📋 AKTIVITAS HARI INI"),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Tambah Aktivitas", callback_data="menu:add")],
+            [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu:home")],
+        ]))
+
+
+@private
+async def daily_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        await update.callback_query.answer()
+    rows = storage.list_daily_activities(update.effective_user.id, limit=20)
+    await update.effective_message.reply_text(
+        _daily_history_text(rows, "🗓 RIWAYAT AKTIVITAS HARIAN"),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 Hari Ini", callback_data="daily:today"),
+             InlineKeyboardButton("🏠 Menu Utama", callback_data="menu:home")],
+        ]))
+
+
+@private
+async def evidence_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        await update.callback_query.answer()
+    rows = storage.recent_evidence(update.effective_user.id, 10)
+    lines = ["☁️ BUKTI DUKUNG", "━━━━━━━━━━━━━━━━━━━━"]
+    buttons = []
+    if not rows:
+        lines.append("Belum ada bukti foto.")
+    for index, row in enumerate(rows, start=1):
+        text = row[1] if len(row[1]) <= 70 else row[1][:67] + "…"
+        state = "✅ Tersimpan" if row[4] == "uploaded" else "⚠️ Perlu dicoba lagi"
+        lines.append(f"\n{index}. {row[0]} · {state}\n{text}")
+        if row[3]:
+            buttons.append([InlineKeyboardButton(f"📷 Buka Bukti {index}", url=row[3])])
+        else:
+            buttons.append([InlineKeyboardButton(
+                f"🔄 Coba Lagi Bukti {index}", callback_data=f"evidence:retry:{row[5]}")])
+    buttons.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="menu:home")])
+    await update.effective_message.reply_text(
+        "\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons))
+
+
+@private
+async def retry_evidence(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    try:
+        evidence_id = int(query.data.rsplit(":", 1)[1])
+    except ValueError:
+        await query.edit_message_text("⚠️ Bukti tidak valid.")
+        return
+    row = storage.get_evidence(evidence_id)
+    if not row or row[9] != update.effective_user.id:
+        await query.edit_message_text("⚠️ Bukti tidak ditemukan.")
+        return
+    if row[8] == "uploaded":
+        await query.edit_message_text(
+            "✅ Bukti sudah tersimpan.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                "☁️ Lihat Bukti Dukung", callback_data="daily:evidence")]]))
+        return
+    context.user_data["photos"] = [{
+        "file_id": row[2], "unique_id": row[3],
+        "mime_type": row[4] or "image/jpeg",
+        "extension": Path(row[5] or "bukti.jpg").suffix or ".jpg",
+        "file_name": row[5] or None,
+    }]
+    user = storage.get_user(update.effective_user.id)
+    uploaded, _, _ = await upload_activity_photos(
+        context, user, row[1], row[10], row[11])
+    context.user_data.pop("photos", None)
+    if uploaded:
+        await query.edit_message_text(
+            "✅ Bukti foto berhasil diproses.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                "☁️ Lihat Bukti Dukung", callback_data="daily:evidence")]]))
+    else:
+        await query.edit_message_text(
+            "⚠️ Bukti foto masih belum dapat diproses. Silakan coba beberapa saat lagi.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                "🔄 Coba Lagi", callback_data=f"evidence:retry:{evidence_id}")]]))
+
+
+@private
+async def profile_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        await update.callback_query.answer()
+    user = storage.get_user(update.effective_user.id)
+    kind = employee_type(user)
+    identifier = "NIP" if kind == "asn" else "ID Pegawai"
+    await update.effective_message.reply_text(
+        "👤 PROFIL PEGAWAI\n━━━━━━━━━━━━━━━━━━━━\n"
+        f"Nama: {user[3] or '-'}\n{identifier}: {user[1]}\n"
+        f"Jenis: {'ASN' if kind == 'asn' else 'Non-ASN'}\n"
+        f"Jabatan: {user[6] or '-'}\nUnit Kerja: {employee_unit(user)}",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+            "🏠 Menu Utama", callback_data="menu:home")]]))
+
+
+@private
+async def help_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        await update.callback_query.answer()
+    kind = employee_type(storage.get_user(update.effective_user.id))
+    detail = ("Pilih kamus dan tugas jabatan, lalu kirim uraian sebagai teks atau "
+              "foto dengan caption. Uraian aktivitas akan diteruskan ke E-Master."
+              if kind == "asn" else
+              "Kirim uraian sebagai teks atau foto dengan caption. Aktivitas Non-ASN "
+              "dicatat tanpa login E-Master.")
+    await update.effective_message.reply_text(
+        "❓ BANTUAN\n━━━━━━━━━━━━━━━━━━━━\n"
+        f"• Tambah Aktivitas: {detail}\n"
+        "• Laporan WFH hanya dapat dibuat pada hari Jumat sampai pukul 23.59 WIB.\n"
+        "• Aktivitas laporan harus memiliki tanggal Jumat dan benar-benar dikirim pada Jumat tersebut.\n"
+        "• Jika foto gagal diproses, gunakan tombol Coba Lagi Foto.\n"
+        "• Uraian hanya dirapikan secara dasar tanpa layanan AI.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+            "🏠 Menu Utama", callback_data="menu:home")]]))
+
+
+def _generate_report_sync(user, moment: datetime):
+    report_date = moment.date()
+    rows = storage.list_wfh_activities(user[0], report_date.isoformat())
+    if not rows:
+        return None
+    with tempfile.TemporaryDirectory(prefix="wfh_report_") as temp_dir:
+        temp_path = Path(temp_dir)
+        report_activities = []
+        for activity_row, evidence_rows in rows:
+            evidence_files = []
+            for evidence_row in evidence_rows:
+                local_path = None
+                if evidence_row[2] and (evidence_row[4] or "").startswith("image/"):
+                    suffix = Path(evidence_row[1] or "bukti.jpg").suffix or ".jpg"
+                    candidate = temp_path / f"evidence_{evidence_row[0]}{suffix}"
+                    try:
+                        local_path = drive_storage.download_file(evidence_row[2], candidate)
+                    except DriveStorageError:
+                        logging.warning("Thumbnail bukti %s tidak dapat diunduh; hyperlink tetap dipakai",
+                                        evidence_row[0])
+                if evidence_row[3]:
+                    evidence_files.append(EvidenceFile(
+                        url=evidence_row[3], local_path=local_path,
+                        file_name=evidence_row[1] or ""))
+            report_activities.append(ReportActivity(
+                activity_time=activity_row[2], text=activity_row[3],
+                evidence=evidence_files))
+        file_name = report_file_name(report_date)
+        local_report = temp_path / file_name
+        build_wfh_report(
+            template_path=REPORT_TEMPLATE, output_path=local_report,
+            employee_name=user[3] or str(user[0]), employee_identifier=user[1],
+            employee_type=employee_type(user),
+            position=user[6] or ("Pegawai Non-ASN" if employee_type(user) == "non_asn" else "-"),
+            unit_name=employee_unit(user), report_date=report_date,
+            activities=report_activities)
+        employee_folder_id = drive_storage.employee_folder(
+            user[3] or str(user[0]), user[10])
+        if not user[10]:
+            storage.set_drive_folder_id(user[0], employee_folder_id)
+        destination_id = drive_storage.report_folder(
+            employee_folder_id, report_date.year, report_date.month)
+        existing = storage.get_report(user[0], report_date.isoformat())
+        existing_file_id = existing[2] if existing and existing[5] == "uploaded" else None
+        file_id, file_url = drive_storage.upload_or_update_file(
+            local_path=local_report, file_name=file_name,
+            mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            parent_id=destination_id, existing_file_id=existing_file_id)
+        storage.save_report(
+            telegram_id=user[0], report_date=report_date.isoformat(),
+            file_name=file_name, drive_file_id=file_id, drive_url=file_url,
+            activity_count=len(report_activities),
+            generated_at_local=moment.isoformat(timespec="seconds"))
+        return file_name, file_url, len(report_activities)
+
+
+@private
+async def generate_wfh_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query:
+        await query.answer()
+    moment = now_jakarta()
+    user = storage.get_user(update.effective_user.id)
+    if not report_window_open(moment):
+        latest = storage.latest_report(user[0])
+        buttons = [[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu:home")]]
+        if latest and latest[2]:
+            buttons.insert(0, [InlineKeyboardButton("📄 Buka Laporan Terakhir", url=latest[2])])
+        await update.effective_message.reply_text(
+            "⛔ PERIODE LAPORAN WFH DITUTUP\n\n"
+            "Laporan hanya dapat dibuat setiap hari Jumat sampai pukul 23.59 WIB.",
+            reply_markup=InlineKeyboardMarkup(buttons))
+        return
+    report_lock = report_locks.setdefault(user[0], asyncio.Lock())
+    if report_lock.locked():
+        await update.effective_message.reply_text(
+            "⏳ Laporan Anda sedang diproses. Mohon tunggu sampai tombol buka laporan muncul.")
+        return
+    status = await update.effective_message.reply_text(
+        "⏳ Menyiapkan Laporan WFH. Mohon tunggu dan jangan menekan tombol berulang kali…")
+    async with report_lock:
+        try:
+            result = await asyncio.to_thread(_generate_report_sync, user, moment)
+            if not result:
+                await status.edit_text(
+                    "ℹ️ Belum ada aktivitas yang memenuhi syarat untuk Laporan WFH hari ini.\n\n"
+                    "Aktivitas harus bertanggal Jumat dan dikirim pada hari Jumat yang sama.")
+                return
+            file_name, file_url, count = result
+            await status.edit_text(
+                "✅ LAPORAN WFH BERHASIL DIBUAT\n\n"
+                f"📅 {format_indonesian_date(moment.date())}\n"
+                f"📝 Jumlah aktivitas: {count}\n"
+                f"📄 Nama file: {file_name}",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📄 Buka Laporan WFH", url=file_url)],
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu:home")],
+                ]))
+        except Exception as exc:
+            file_name = report_file_name(moment.date())
+            storage.save_report_error(user[0], moment.date().isoformat(), file_name, str(exc))
+            logging.exception("Pembuatan laporan WFH gagal untuk Telegram ID %s", user[0])
+            message = str(exc) if isinstance(exc, DriveStorageError) else "Laporan belum dapat dibuat."
+            await status.edit_text(
+                f"❌ {message}\nData aktivitas tetap aman. Silakan coba kembali sebelum pukul 23.59 WIB.")
+
+
 @private
 async def refresh_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1384,8 +1982,25 @@ async def add_employee(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     context.user_data.clear()
     await update.effective_message.reply_text(
-        "👥 *TAMBAH PEGAWAI*\n\nMasukkan Telegram ID pegawai.\nPegawai dapat melihat ID melalui `/start`.",
-        parse_mode="Markdown")
+        "👥 *TAMBAH PEGAWAI*\n\nPilih jenis pegawai:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🟦 ASN", callback_data="admin:type:asn"),
+            InlineKeyboardButton("🟩 Non-ASN", callback_data="admin:type:non_asn"),
+        ]]))
+    return ADMIN_TYPE
+
+
+async def employee_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    kind = query.data.rsplit(":", 1)[1]
+    if kind not in {"asn", "non_asn"}:
+        await query.edit_message_text("Jenis pegawai tidak valid.")
+        return ConversationHandler.END
+    context.user_data["new_employee_type"] = kind
+    await query.edit_message_text(
+        "Masukkan Telegram ID pegawai.\nPegawai dapat melihat ID melalui /start.")
     return ADMIN_TGID
 
 
@@ -1402,14 +2017,19 @@ async def employee_tgid(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Akun admin tidak dapat didaftarkan ulang dari menu pegawai.")
         return ADMIN_TGID
     context.user_data["new_telegram_id"] = telegram_id
-    await update.message.reply_text("Masukkan NIP pegawai:")
+    label = "NIP" if context.user_data.get("new_employee_type") == "asn" else "ID Pegawai/NIK"
+    await update.message.reply_text(f"Masukkan {label}:")
     return ADMIN_NIP
 
 
 async def employee_nip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     nip = update.message.text.strip()
-    if not nip.isdigit() or not 10 <= len(nip) <= 25:
-        await update.message.reply_text("NIP tidak valid. Masukkan angka NIP lengkap.")
+    if context.user_data.get("new_employee_type") == "asn":
+        if not nip.isdigit() or not 10 <= len(nip) <= 25:
+            await update.message.reply_text("NIP tidak valid. Masukkan angka NIP lengkap.")
+            return ADMIN_NIP
+    elif not 3 <= len(nip) <= 50 or any(ord(character) < 32 for character in nip):
+        await update.message.reply_text("ID Pegawai/NIK harus berisi 3–50 karakter.")
         return ADMIN_NIP
     context.user_data["new_nip"] = nip
     try:
@@ -1426,14 +2046,25 @@ async def employee_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Nama harus 1–100 karakter.")
         return ADMIN_NAME
     telegram_id = context.user_data["new_telegram_id"]
-    storage.invite_user(telegram_id, context.user_data["new_nip"], name)
+    kind = context.user_data.get("new_employee_type", "asn")
+    storage.invite_user(telegram_id, context.user_data["new_nip"], name,
+                        employee_type=kind,
+                        unit_name=os.getenv("DEFAULT_UNIT_KERJA", "Pemasaran"))
     clear_cached_user(telegram_id)
+    next_step = ("Minta pegawai membuka bot, tekan /start, lalu /aktifkan."
+                 if kind == "asn" else
+                 "Akun Non-ASN langsung aktif. Minta pegawai membuka bot lalu tekan /start.")
     await update.message.reply_text(
-        f"✅ UNDANGAN DIBUAT\n\nNama: {name}\nTelegram ID: {telegram_id}\n\n"
-        "Minta pegawai membuka bot, tekan /start, lalu /aktifkan.")
+        f"✅ PEGAWAI DITAMBAHKAN\n\nNama: {name}\n"
+        f"Jenis: {'ASN' if kind == 'asn' else 'Non-ASN'}\nTelegram ID: {telegram_id}\n\n"
+        f"{next_step}")
     try:
-        await context.bot.send_message(telegram_id,
-            f"👋 Halo {name}, Anda telah didaftarkan ke Bot Aktivitas e‑Master.\nJalankan /aktifkan untuk memasukkan password pribadi.")
+        instruction = ("Jalankan /aktifkan untuk memasukkan password pribadi."
+                       if kind == "asn" else "Akun Anda sudah aktif. Jalankan /start.")
+        await context.bot.send_message(
+            telegram_id,
+            f"👋 Halo {name}, Anda telah didaftarkan ke E-Master Jatim sebagai "
+            f"{'ASN' if kind == 'asn' else 'Non-ASN'}.\n{instruction}")
     except Exception:
         logging.info("Undangan tidak dapat dikirim langsung; pegawai tetap dapat membuka bot sendiri")
     context.user_data.clear()
@@ -1446,7 +2077,8 @@ async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Telegram ID Anda belum didaftarkan admin.")
         return ConversationHandler.END
     if user[4] == "active":
-        await update.message.reply_text("✅ Akun sudah aktif. Gunakan /login.")
+        instruction = "Gunakan /login." if employee_type(user) == "asn" else "Gunakan /start."
+        await update.message.reply_text(f"✅ Akun sudah aktif. {instruction}")
         return ConversationHandler.END
     if user[4] != "invited":
         await update.message.reply_text("⛔ Akun tidak dapat diaktifkan. Hubungi admin.")
@@ -1488,9 +2120,15 @@ async def users_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rows = storage.list_users()
     text = ["👥 KELOLA PEGAWAI", "━━━━━━━━━━━━━━━━━━━━"]
     buttons = [[InlineKeyboardButton("➕ Tambah Pegawai", callback_data="admin:add")]]
-    for tid, nip, name, status, is_admin in rows:
+    maintenance = storage.maintenance_active()
+    text.append(f"\n🔧 Maintenance: {'AKTIF' if maintenance else 'NONAKTIF'}")
+    buttons.append([InlineKeyboardButton(
+        "✅ Selesaikan Maintenance" if maintenance else "🔧 Mulai Maintenance",
+        callback_data="admin:maintenance:off" if maintenance else "admin:maintenance:on")])
+    for tid, nip, name, status, is_admin, kind in rows:
         icon = "👑" if is_admin else ("✅" if status == "active" else "⏳" if status == "invited" else "⛔")
-        text.append(f"\n{icon} {name or 'Tanpa nama'}\nID: {tid} · Status: {status}")
+        type_label = "ASN" if kind == "asn" else "Non-ASN"
+        text.append(f"\n{icon} {name or 'Tanpa nama'}\nID: {tid} · {type_label} · Status: {status}")
         if not is_admin and status != "disabled":
             buttons.append([InlineKeyboardButton(f"⛔ Nonaktifkan {name or tid}", callback_data=f"admin:disable:{tid}")])
     await update.effective_message.reply_text("\n".join(text), reply_markup=InlineKeyboardMarkup(buttons))
@@ -1504,6 +2142,68 @@ async def disable_employee(update: Update, context: ContextTypes.DEFAULT_TYPE):
     storage.disable_user(telegram_id)
     clear_cached_user(telegram_id)
     await update.callback_query.edit_message_text("✅ Pegawai dinonaktifkan. Data pegawai lain tidak berubah.")
+
+
+async def broadcast_notification(application: Application, text: str):
+    delivered = 0
+    for telegram_id in storage.list_notification_user_ids():
+        try:
+            await application.bot.send_message(telegram_id, text)
+            delivered += 1
+        except Exception:
+            logging.info("Notifikasi sistem tidak terkirim ke Telegram ID %s", telegram_id)
+        await asyncio.sleep(0.04)
+    return delivered
+
+
+async def maintenance_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not admin_only(update):
+        await query.edit_message_text("⛔ Khusus admin.")
+        return
+    action = query.data.rsplit(":", 1)[1]
+    if action == "on":
+        if storage.maintenance_active():
+            await query.edit_message_text("ℹ️ Mode maintenance sudah aktif.")
+            return
+        storage.set_setting("maintenance_active", "1")
+        storage.set_setting("maintenance_started_at", now_jakarta().isoformat(timespec="seconds"))
+        delivered = await broadcast_notification(
+            context.application,
+            "🔧 BOT SEDANG DALAM PERBAIKAN\n\n"
+            "Saat ini E-Master Jatim sedang menjalani pembaruan sistem. "
+            "Beberapa layanan untuk sementara tidak dapat digunakan. "
+            "Mohon menunggu sampai proses selesai.")
+        await query.edit_message_text(
+            f"🔧 Mode maintenance aktif. Notifikasi dikirim kepada {delivered} pengguna aktif.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                "👥 Kembali", callback_data="menu:users")]]))
+        return
+    if not storage.maintenance_active():
+        await query.edit_message_text("ℹ️ Mode maintenance sudah nonaktif.")
+        return
+    try:
+        storage.db.execute("SELECT 1").fetchone()
+        await asyncio.to_thread(drive_storage.healthcheck)
+    except Exception as exc:
+        message = str(exc) if isinstance(exc, DriveStorageError) else "Pemeriksaan sistem gagal."
+        await query.edit_message_text(
+            f"⚠️ Maintenance belum dapat diselesaikan. {message}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                "🔄 Periksa Lagi", callback_data="admin:maintenance:off")]]))
+        return
+    storage.set_setting("maintenance_active", "0")
+    storage.set_setting("maintenance_finished_at", now_jakarta().isoformat(timespec="seconds"))
+    delivered = await broadcast_notification(
+        context.application,
+        "✅ PERBAIKAN TELAH SELESAI\n\n"
+        "E-Master Jatim sudah dapat digunakan kembali. "
+        "Silakan buka /start untuk melanjutkan aktivitas.")
+    await query.edit_message_text(
+        f"✅ Mode maintenance selesai. Notifikasi dikirim kepada {delivered} pengguna aktif.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+            "🏠 Menu Utama", callback_data="menu:home")]]))
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -1540,12 +2240,27 @@ async def configure_bot_commands(application: Application):
             BotCommand("tambah", "Tambah aktivitas harian"),
             BotCommand("dashboard", "Lihat progres WPT terbaru"),
             BotCommand("riwayat", "Edit, salin, atau hapus aktivitas"),
+            BotCommand("laporan", "Buat Laporan WFH hari Jumat"),
             BotCommand("login", "Login e-Master dengan OTP baru"),
             BotCommand("batal", "Batalkan proses yang berjalan"),
             BotCommand("aktifkan", "Aktifkan akun pegawai baru"),
         ])
     except Exception:
         logging.warning("Daftar perintah Telegram belum dapat diperbarui")
+    if (storage.maintenance_active()
+            and os.getenv("AUTO_END_MAINTENANCE_ON_START", "true").lower() == "true"):
+        try:
+            storage.db.execute("SELECT 1").fetchone()
+            await asyncio.to_thread(drive_storage.healthcheck)
+            storage.set_setting("maintenance_active", "0")
+            storage.set_setting("maintenance_finished_at", now_jakarta().isoformat(timespec="seconds"))
+            await broadcast_notification(
+                application,
+                "✅ PERBAIKAN TELAH SELESAI\n\n"
+                "E-Master Jatim sudah dapat digunakan kembali. "
+                "Silakan buka /start untuk melanjutkan aktivitas.")
+        except Exception:
+            logging.exception("Maintenance tetap aktif karena pemeriksaan awal belum berhasil")
 
 
 def main():
@@ -1555,7 +2270,9 @@ def main():
     app.add_handler(ConversationHandler(
         entry_points=[CommandHandler("tambahpegawai", add_employee),
                       CallbackQueryHandler(add_employee, pattern=r"^admin:add$")],
-        states={ADMIN_TGID: [MessageHandler(filters.TEXT & ~filters.COMMAND, employee_tgid)],
+        states={ADMIN_TYPE: [CallbackQueryHandler(employee_type_choice,
+                                                  pattern=r"^admin:type:(?:asn|non_asn)$")],
+                ADMIN_TGID: [MessageHandler(filters.TEXT & ~filters.COMMAND, employee_tgid)],
                 ADMIN_NIP: [MessageHandler(filters.TEXT & ~filters.COMMAND, employee_nip)],
                 ADMIN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, employee_name)]},
         fallbacks=[CommandHandler("batal", cancel)]))
@@ -1579,8 +2296,15 @@ def main():
         PICK: [CallbackQueryHandler(pick, pattern=r"^pick:\d+$"),
                CallbackQueryHandler(navigate_kamus, pattern=r"^kamus:(?:page:\d+|search)$")],
         VOLUME: [MessageHandler(filters.TEXT & ~filters.COMMAND, volume)],
-        OBJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, object_work)],
-        CONFIRM: [CallbackQueryHandler(confirm, pattern=r"^(?:send|send_duplicate|cancel)$")],
+        OBJECT: [MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, object_work)],
+        CONFIRM: [CallbackQueryHandler(confirm,
+                                       pattern=r"^(?:send|send_duplicate|cancel|add_photo)$")],
+        DAILY_ACTIVITY: [MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND,
+                                        daily_activity_input)],
+        DAILY_CONFIRM: [CallbackQueryHandler(
+            daily_activity_confirm, pattern=r"^daily:(?:save|edit|cancel|addphoto)$")],
+        ADDITIONAL_PHOTO: [MessageHandler((filters.PHOTO | filters.TEXT) & ~filters.COMMAND,
+                                          additional_photo_input)],
     }, fallbacks=[CommandHandler("batal", cancel)], allow_reentry=True))
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(edit_begin, pattern=r"^edit:pick:\d+$")],
@@ -1605,11 +2329,14 @@ def main():
             COPY_VOLUME: [MessageHandler(filters.TEXT & ~filters.COMMAND, copy_volume)],
             COPY_OBJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, copy_object)],
             CONFIRM: [CallbackQueryHandler(confirm,
-                                           pattern=r"^(?:send|send_duplicate|cancel)$")],
+                                           pattern=r"^(?:send|send_duplicate|cancel|add_photo)$")],
+            ADDITIONAL_PHOTO: [MessageHandler((filters.PHOTO | filters.TEXT) & ~filters.COMMAND,
+                                              additional_photo_input)],
         }, fallbacks=[CommandHandler("batal", cancel)], allow_reentry=True))
     app.add_handler(CommandHandler("progres", progress))
     app.add_handler(CommandHandler("dashboard", progress))
     app.add_handler(CommandHandler("riwayat", history))
+    app.add_handler(CommandHandler("laporan", generate_wfh_report))
     app.add_handler(CommandHandler("batal", cancel))
     app.add_handler(CallbackQueryHandler(progress, pattern=r"^menu:progress$"))
     app.add_handler(CallbackQueryHandler(history, pattern=r"^menu:history$"))
@@ -1619,14 +2346,23 @@ def main():
     app.add_handler(CallbackQueryHandler(delete_cancel, pattern=r"^delete:cancel$"))
     app.add_handler(CallbackQueryHandler(menu_home, pattern=r"^menu:home$"))
     app.add_handler(CallbackQueryHandler(refresh_profile, pattern=r"^menu:profile$"))
+    app.add_handler(CallbackQueryHandler(profile_view, pattern=r"^menu:profileview$"))
+    app.add_handler(CallbackQueryHandler(help_view, pattern=r"^menu:help$"))
+    app.add_handler(CallbackQueryHandler(daily_today, pattern=r"^daily:today$"))
+    app.add_handler(CallbackQueryHandler(daily_history, pattern=r"^daily:history$"))
+    app.add_handler(CallbackQueryHandler(evidence_list, pattern=r"^daily:evidence$"))
+    app.add_handler(CallbackQueryHandler(retry_evidence, pattern=r"^evidence:retry:\d+$"))
+    app.add_handler(CallbackQueryHandler(generate_wfh_report, pattern=r"^report:generate$"))
     app.add_handler(CallbackQueryHandler(favorites_menu, pattern=r"^menu:favorites$"))
     app.add_handler(CallbackQueryHandler(add_favorite, pattern=r"^favorite:add:\d+$"))
     app.add_handler(CallbackQueryHandler(remove_favorite, pattern=r"^favorite:remove:\d+$"))
     app.add_handler(CallbackQueryHandler(users_menu, pattern=r"^menu:users$"))
     app.add_handler(CallbackQueryHandler(disable_employee, pattern=r"^admin:disable:\d+$"))
+    app.add_handler(CallbackQueryHandler(
+        maintenance_toggle, pattern=r"^admin:maintenance:(?:on|off)$"))
     app.add_handler(CallbackQueryHandler(stale_button))
     app.add_error_handler(on_error)
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=False)
 
 
 if __name__ == "__main__":

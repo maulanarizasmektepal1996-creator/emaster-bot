@@ -596,7 +596,8 @@ class EMasterClient:
         wpt_match = re.search(r"Total\s+WPT\s+Aktifitas\s+Bulan\s+\d+\s*:\s*([\d.,]+)\s*Menit", plain, re.I)
         if not wpt_match:
             raise EMasterError("Total WPT terbaru tidak ditemukan pada halaman e-Master.")
-        clean = lambda value: int(re.sub(r"\D", "", value or "0"))
+        def clean(value):
+            return int(re.sub(r"\D", "", value or "0"))
         return MonthProgress(clean(activity_match.group(1) if activity_match else "0"), clean(wpt_match.group(1)))
 
     def submit_activity(self, *, month: str, target: WorkTarget, date: str,
